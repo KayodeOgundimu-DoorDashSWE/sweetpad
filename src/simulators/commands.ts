@@ -1,19 +1,18 @@
 import * as vscode from "vscode";
 import { askSimulator } from "../build/utils.js";
-import type { ExtensionContext } from "../common/commands.js";
+import type { CommandExecution } from "../common/commands.js";
 import { runTask } from "../common/tasks.js";
 import type { iOSSimulatorDestinationTreeItem } from "../destination/tree.js";
 
 /**
  * Command to start simulator from the simulator tree view in the sidebar
  */
-export async function startSimulatorCommand(context: ExtensionContext, item?: iOSSimulatorDestinationTreeItem) {
+export async function startSimulatorCommand(execution: CommandExecution, item?: iOSSimulatorDestinationTreeItem) {
   let simulatorUdid: string;
   if (item) {
     simulatorUdid = item.simulator.udid;
   } else {
-    context.updateProgressStatus("Searching for simulator to start");
-    const simulator = await askSimulator(context, {
+    const simulator = await askSimulator(execution.context, {
       title: "Select simulator to start",
       state: "Shutdown",
       error: "No available simulators to start",
@@ -21,8 +20,7 @@ export async function startSimulatorCommand(context: ExtensionContext, item?: iO
     simulatorUdid = simulator.udid;
   }
 
-  context.updateProgressStatus("Starting simulator");
-  await runTask(context, {
+  await runTask(execution.context, {
     name: "Start Simulator",
     lock: "sweetpad.simulators",
     terminateLocked: true,
@@ -32,7 +30,7 @@ export async function startSimulatorCommand(context: ExtensionContext, item?: iO
         args: ["simctl", "boot", simulatorUdid],
       });
 
-      await context.destinationsManager.refreshSimulators();
+      await execution.context.destinationsManager.refreshSimulators();
     },
   });
 }
@@ -40,13 +38,12 @@ export async function startSimulatorCommand(context: ExtensionContext, item?: iO
 /**
  * Command to stop simulator from the simulator tree view in the sidebar
  */
-export async function stopSimulatorCommand(context: ExtensionContext, item?: iOSSimulatorDestinationTreeItem) {
-  context.updateProgressStatus("Searching for simulator to stop");
+export async function stopSimulatorCommand(execution: CommandExecution, item?: iOSSimulatorDestinationTreeItem) {
   let simulatorId: string;
   if (item) {
     simulatorId = item.simulator.udid;
   } else {
-    const simulator = await askSimulator(context, {
+    const simulator = await askSimulator(execution.context, {
       title: "Select simulator to stop",
       state: "Booted",
       error: "No available simulators to stop",
@@ -54,8 +51,7 @@ export async function stopSimulatorCommand(context: ExtensionContext, item?: iOS
     simulatorId = simulator.udid;
   }
 
-  context.updateProgressStatus("Stopping simulator");
-  await runTask(context, {
+  await runTask(execution.context, {
     name: "Stop Simulator",
     lock: "sweetpad.simulators",
     terminateLocked: true,
@@ -65,7 +61,7 @@ export async function stopSimulatorCommand(context: ExtensionContext, item?: iOS
         args: ["simctl", "shutdown", simulatorId],
       });
 
-      await context.destinationsManager.refreshSimulators();
+      await execution.context.destinationsManager.refreshSimulators();
     },
   });
 }
@@ -73,9 +69,8 @@ export async function stopSimulatorCommand(context: ExtensionContext, item?: iOS
 /**
  * Command to delete simulator from top of the simulator tree view in the sidebar
  */
-export async function openSimulatorCommand(context: ExtensionContext) {
-  context.updateProgressStatus("Opening Simulator.app");
-  await runTask(context, {
+export async function openSimulatorCommand(execution: CommandExecution) {
+  await runTask(execution.context, {
     name: "Open Simulator",
     error: "Could not open simulator app",
     lock: "sweetpad.simulators",
@@ -96,9 +91,8 @@ export async function openSimulatorCommand(context: ExtensionContext) {
  * This is useful when you have a lot of simulators and you want to free up some space.
  * Also in some cases it can help to issues with starting simulators.
  */
-export async function removeSimulatorCacheCommand(context: ExtensionContext) {
-  context.updateProgressStatus("Removing Simulator cache");
-  await runTask(context, {
+export async function removeSimulatorCacheCommand(execution: CommandExecution) {
+  await runTask(execution.context, {
     name: "Remove Simulator Cache",
     error: "Error removing simulator cache",
     lock: "sweetpad.build",

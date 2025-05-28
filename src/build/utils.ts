@@ -71,7 +71,6 @@ export async function askDestinationToRunOn(
   // We can remove platforms that are not supported by the project
   const supportedPlatforms = buildSettings?.supportedPlatforms;
 
-  context.updateProgressStatus("Searching for destinations");
   const destinations = await context.destinationsManager.getDestinations({
     mostUsedSort: true,
   });
@@ -183,8 +182,6 @@ export async function askSchemeForBuild(
     ignoreCache?: boolean;
   },
 ): Promise<string> {
-  context.updateProgressStatus("Searching for scheme");
-
   const cachedScheme = context.buildManager.getDefaultSchemeForBuild();
   if (cachedScheme && !options.ignoreCache) {
     return cachedScheme;
@@ -310,8 +307,6 @@ export async function askConfiguration(
     xcworkspace: string;
   },
 ): Promise<string> {
-  context.updateProgressStatus("Searching for build configuration");
-
   const fromConfig = getWorkspaceConfig("build.configuration");
   if (fromConfig) {
     return fromConfig;
@@ -334,25 +329,14 @@ export async function detectXcodeWorkspacesPaths(): Promise<string[]> {
   const workspace = getWorkspacePath();
 
   // Get all files that end with .xcworkspace (4 depth)
-  const xcworkspacePaths = await findFilesRecursive({
+  const paths = await findFilesRecursive({
     directory: workspace,
     depth: 4,
     matcher: (file) => {
       return file.name.endsWith(".xcworkspace");
     },
   });
-
-  // Also look for Package.swift files for SPM projects
-  const packageSwiftPaths = await findFilesRecursive({
-    directory: workspace,
-    depth: 4,
-    matcher: (file) => {
-      return file.name === "Package.swift";
-    },
-  });
-
-  // Combine both types of paths
-  return [...xcworkspacePaths, ...packageSwiftPaths];
+  return paths;
 }
 
 /**
@@ -361,12 +345,12 @@ export async function detectXcodeWorkspacesPaths(): Promise<string[]> {
 export async function selectXcodeWorkspace(options: { autoselect: boolean }): Promise<string> {
   const workspacePath = getWorkspacePath();
 
-  // Get all files that end with .xcworkspace (4 depth) and Package.swift files
+  // Get all files that end with .xcworkspace (4 depth)
   const paths = await detectXcodeWorkspacesPaths();
 
   // No files, nothing to do
   if (paths.length === 0) {
-    throw new ExtensionError("No xcode workspaces or SPM packages found", {
+    throw new ExtensionError("No xcode workspaces found", {
       context: {
         cwd: workspacePath,
       },
@@ -376,8 +360,7 @@ export async function selectXcodeWorkspace(options: { autoselect: boolean }): Pr
   // One file, use it and save it to the cache
   if (paths.length === 1 && options.autoselect) {
     const path = paths[0];
-    const projectType = path.endsWith("Package.swift") ? "SPM package" : "Xcode workspace";
-    commonLogger.log(`${projectType} was detected`, {
+    commonLogger.log("Xcode workspace was detected", {
       workspace: workspacePath,
       path: path,
     });
@@ -389,7 +372,7 @@ export async function selectXcodeWorkspace(options: { autoselect: boolean }): Pr
 
   // More then one, ask user to select
   const selected = await showQuickPick({
-    title: "Select xcode workspace or SPM package",
+    title: "Select xcode workspace",
     items: paths
       .sort((a, b) => {
         // Sort by depth to show less nested paths first
@@ -404,12 +387,9 @@ export async function selectXcodeWorkspace(options: { autoselect: boolean }): Pr
 
         const isInRootDir = parentDir === ".";
         const isCocoaPods = isInRootDir && isCocoaProject;
-        const isSPMPackage = xwPath.endsWith("Package.swift");
 
         let detail: string | undefined;
-        if (isSPMPackage) {
-          detail = "Swift Package Manager";
-        } else if (isCocoaPods && isInRootDir) {
+        if (isCocoaPods && isInRootDir) {
           detail = "CocoaPods (recommended)";
         } else if (!isInRootDir && parentDir.endsWith(".xcodeproj")) {
           detail = "Xcode";

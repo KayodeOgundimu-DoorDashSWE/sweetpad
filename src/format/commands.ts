@@ -1,19 +1,18 @@
 import * as vscode from "vscode";
-import type { ExtensionContext } from "../common/commands.js";
+import { formatDocument } from "./formatter.js";
 import { formatLogger } from "./logger.js";
 
 /*
  * Format current opened document
  */
-export async function formatCommand(context: ExtensionContext) {
-  context.updateProgressStatus("Formatting document");
+export async function formatCommand() {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     return;
   }
 
   const document = editor.document;
-  await context.formatter.formatDocument(document);
+  await formatDocument(document);
 }
 
 /*

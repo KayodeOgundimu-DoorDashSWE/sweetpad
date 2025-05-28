@@ -373,7 +373,7 @@ export class TestingManager {
   /**
    * Execute separate command to build the project before running tests
    */
-  async buildForTestingCommand(context: ExtensionContext) {
+  async buildForTestingCommand() {
     const { scheme, destination, xcworkspace } = await this.askTestingConfigurations();
 
     // before testing we need to build the project to avoid runnning tests on old code or
@@ -393,7 +393,6 @@ export class TestingManager {
     destination: Destination;
     xcworkspace: string;
   }) {
-    this.context.updateProgressStatus("Building for testing");
     const destinationRaw = getXcodeBuildDestinationString({ destination: options.destination });
 
     // todo: add xcodebeautify command to format output
@@ -403,17 +402,6 @@ export class TestingManager {
       lock: "sweetpad.build",
       terminateLocked: true,
       callback: async (terminal) => {
-        // Handle SPM projects
-        if (options.xcworkspace.endsWith("Package.swift")) {
-          const packageDir = path.dirname(options.xcworkspace);
-          await terminal.execute({
-            command: "sh",
-            args: ["-c", `cd "${packageDir}" && xcodebuild build-for-testing -destination "${destinationRaw}" -allowProvisioningUpdates -scheme "${options.scheme}"`],
-          });
-          return;
-        }
-
-        // Original Xcode workspace logic
         await terminal.execute({
           command: "xcodebuild",
           args: [
@@ -742,7 +730,6 @@ export class TestingManager {
 
       // todo: add check if project is already built
 
-      this.context.updateProgressStatus("Running tests");
       await this.runTests({
         run: run,
         request: request,
@@ -817,25 +804,6 @@ export class TestingManager {
         lock: "sweetpad.build",
         terminateLocked: true,
         callback: async (terminal) => {
-          // Handle SPM projects
-          if (options.xcworkspace.endsWith("Package.swift")) {
-            const packageDir = path.dirname(options.xcworkspace);
-            await terminal.execute({
-              command: "sh",
-              args: ["-c", `cd "${packageDir}" && xcodebuild test-without-building -destination "${destinationRaw}" -scheme "${scheme}" -only-testing:"${testTarget}/${classTest.id}"`],
-              onOutputLine: async (output) => {
-                await this.parseOutputLine({
-                  line: output.value,
-                  testRun: run,
-                  className: className,
-                  runContext: runContext,
-                });
-              },
-            });
-            return;
-          }
-
-          // Original Xcode workspace logic
           await terminal.execute({
             command: "xcodebuild",
             args: [
@@ -919,25 +887,6 @@ export class TestingManager {
       terminateLocked: true,
       callback: async (terminal) => {
         try {
-          // Handle SPM projects
-          if (options.xcworkspace.endsWith("Package.swift")) {
-            const packageDir = path.dirname(options.xcworkspace);
-            await terminal.execute({
-              command: "sh",
-              args: ["-c", `cd "${packageDir}" && xcodebuild test-without-building -destination "${destinationRaw}" -scheme "${scheme}" -only-testing:"${testTarget}/${className}/${methodName}"`],
-              onOutputLine: async (output) => {
-                await this.parseOutputLine({
-                  line: output.value,
-                  testRun: testRun,
-                  className: className,
-                  runContext: runContext,
-                });
-              },
-            });
-            return;
-          }
-
-          // Original Xcode workspace logic
           await terminal.execute({
             command: "xcodebuild",
             args: [

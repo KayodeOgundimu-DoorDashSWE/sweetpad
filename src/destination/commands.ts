@@ -1,47 +1,41 @@
 import { selectDestinationForBuild } from "../build/utils";
-import type { ExtensionContext } from "../common/commands";
+import type { CommandExecution } from "../common/commands";
 import { selectDestinationForTesting } from "../testing/utils";
 import type { DestinationTreeItem } from "./tree";
 
-export async function selectDestinationForBuildCommand(context: ExtensionContext, item?: DestinationTreeItem) {
+export async function selectDestinationForBuildCommand(execution: CommandExecution, item?: DestinationTreeItem) {
   if (item) {
-    context.destinationsManager.setWorkspaceDestinationForBuild(item.destination);
+    execution.context.destinationsManager.setWorkspaceDestinationForBuild(item.destination);
     return;
   }
-
-  context.updateProgressStatus("Searching for destination");
-  const destinations = await context.destinationsManager.getDestinations({
+  const destinations = await execution.context.destinationsManager.getDestinations({
     mostUsedSort: true,
   });
-
-  await selectDestinationForBuild(context, {
+  await selectDestinationForBuild(execution.context, {
     destinations: destinations,
     supportedPlatforms: undefined, // All platforms
   });
 }
 
-export async function selectDestinationForTestingCommand(context: ExtensionContext, item?: DestinationTreeItem) {
+export async function selectDestinationForTestingCommand(execution: CommandExecution, item?: DestinationTreeItem) {
   if (item) {
-    context.destinationsManager.setWorkspaceDestinationForTesting(item.destination);
+    execution.context.destinationsManager.setWorkspaceDestinationForTesting(item.destination);
     return;
   }
-
-  context.updateProgressStatus("Searching for destination");
-  const destinations = await context.destinationsManager.getDestinations({
+  const destinations = await execution.context.destinationsManager.getDestinations({
     mostUsedSort: true,
   });
-
-  await selectDestinationForTesting(context, {
+  await selectDestinationForTesting(execution.context, {
     destinations: destinations,
     supportedPlatforms: undefined,
   });
 }
 
-export async function removeRecentDestinationCommand(context: ExtensionContext, item?: DestinationTreeItem) {
+export async function removeRecentDestinationCommand(execution: CommandExecution, item?: DestinationTreeItem) {
   if (!item) {
     return;
   }
 
-  const manager = context.destinationsManager;
+  const manager = execution.context.destinationsManager;
   manager.removeRecentDestination(item.destination);
 }

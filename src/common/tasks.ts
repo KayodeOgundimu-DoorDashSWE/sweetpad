@@ -72,14 +72,6 @@ function cleanCommandArgs(args: (string | null)[] | undefined | null): string[] 
   return args.filter((arg) => arg !== null);
 }
 
-export function setTaskPresentationOptions(task: vscode.Task): void {
-  const autoRevealTerminal = getWorkspaceConfig("system.autoRevealTerminal") ?? true;
-  task.presentationOptions = {
-    // terminal will be revealed, if auto reveal is enabled
-    reveal: autoRevealTerminal ? vscode.TaskRevealKind.Always : vscode.TaskRevealKind.Never,
-  };
-}
-
 /**
  * Collect stdout or stderr output and send it line by line to the callback
  */
@@ -377,7 +369,6 @@ export class TaskTerminalV1 implements TaskTerminal {
       new vscode.ShellExecution(command),
       this.options.problemMatchers,
     );
-    setTaskPresentationOptions(task);
 
     const execution = await vscode.tasks.executeTask(task);
 
@@ -469,7 +460,6 @@ async function runTaskV2(
     }
   }
 
-  const currentScope = context.getExecutionScope();
   const task = new vscode.Task(
     {
       type: "custom",
@@ -480,18 +470,11 @@ async function runTaskV2(
     options.source ?? "sweetpad",
     new vscode.CustomExecution(async () => {
       return new TaskTerminalV2(context, {
-        callback: (terminal) => {
-          // we propagate current command to the callback because vscode.CustomExecution
-          // breaks the context that we use to show progress
-          return context.setExecutionScope(currentScope, () => {
-            return options.callback(terminal);
-          });
-        },
+        callback: options.callback,
       });
     }),
     options.problemMatchers,
   );
-  setTaskPresentationOptions(task);
 
   const execution = await vscode.tasks.executeTask(task);
 

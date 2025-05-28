@@ -1,17 +1,16 @@
 import * as vscode from "vscode";
-import type { ExtensionContext } from "../common/commands.js";
+import type { CommandExecution } from "../common/commands.js";
 import { runTask } from "../common/tasks.js";
 import type { ToolTreeItem } from "./tree.js";
 import { askTool } from "./utils.js";
 
 /**
- * Command to install tool from the tool tree view in the sidebar using brew
+ * Comamnd to install tool from the tool tree view in the sidebar using brew
  */
-export async function installToolCommand(context: ExtensionContext, item?: ToolTreeItem) {
+export async function installToolCommand(execution: CommandExecution, item?: ToolTreeItem) {
   const tool = item?.tool ?? (await askTool({ title: "Select tool to install" }));
 
-  context.updateProgressStatus("Installing tool");
-  await runTask(context, {
+  await runTask(execution.context, {
     name: "Install Tool",
     error: "Error installing tool",
     terminateLocked: false,
@@ -27,7 +26,7 @@ export async function installToolCommand(context: ExtensionContext, item?: ToolT
         },
       });
 
-      context.toolsManager.refresh();
+      execution.context.toolsManager.refresh();
     },
   });
 }
@@ -35,7 +34,7 @@ export async function installToolCommand(context: ExtensionContext, item?: ToolT
 /**
  * Command to open documentation in the browser from the tool tree view in the sidebar
  */
-export async function openDocumentationCommand(context: ExtensionContext, item?: ToolTreeItem) {
+export async function openDocumentationCommand(execution: CommandExecution, item?: ToolTreeItem) {
   const tool = item?.tool ?? (await askTool({ title: "Select tool to open documentation" }));
   await vscode.env.openExternal(vscode.Uri.parse(tool.documentation));
 }
