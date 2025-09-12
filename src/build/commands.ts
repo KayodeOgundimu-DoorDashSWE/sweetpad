@@ -2012,16 +2012,13 @@ export async function bazelBuildCommand(context: ExtensionContext, bazelItem?: B
     callback: async (terminal) => {
       terminal.write(`Building Bazel target: ${bazelItem!.target.buildLabel}\n\n`);
 
-      // Go to the workspace path
-      await terminal.execute({
-        command: "cd",
-        args: [bazelItem!.package.path],
-      });
-
       // Use terminal.execute for streaming output
       await terminal.execute({
-        command: "bazel",
-        args: ["build", bazelItem!.target.buildLabel],
+        command: "sh",
+        args: [
+          "-c",
+          `cd "${bazelItem!.package.path}" && bazel build ${bazelItem!.target.buildLabel} --platforms=@build_bazel_apple_support//platforms:ios_sim_arm64`,
+        ],
       });
 
       terminal.write(`\n✅ Build completed for ${bazelItem!.target.name}\n`);
@@ -2057,16 +2054,10 @@ export async function bazelTestCommand(context: ExtensionContext, bazelItem?: Ba
     callback: async (terminal) => {
       terminal.write(`Running Bazel tests: ${bazelItem!.target.testLabel}\n\n`);
 
-      // Go to the workspace path
-      await terminal.execute({
-        command: "cd",
-        args: [bazelItem!.package.path],
-      });
-
       // Use terminal.execute for streaming output
       await terminal.execute({
-        command: "bazel",
-        args: ["test", bazelItem!.target.testLabel!, "--test_output=all"],
+        command: "sh",
+        args: ["-c", `cd "${bazelItem!.package.path}" && bazel test ${bazelItem!.target.testLabel!} --test_output=all`],
       });
 
       terminal.write(`\n✅ Tests completed for ${bazelItem!.target.name}\n`);
@@ -2110,21 +2101,19 @@ export async function bazelRunCommand(context: ExtensionContext, bazelItem?: Baz
       // Build the run command with destination targeting
       let runArgs = ["run", bazelItem!.target.buildLabel];
 
-      // Go to the workspace path first
-      await terminal.execute({
-        command: "cd",
-        args: [bazelItem!.package.path],
-      });
-
       // Handle iOS device vs simulator differently
       if (destination.type === "iOSSimulator") {
         // For simulators: use bazel run directly
-        runArgs.push("--ios_simulator_device", destination.name);
+        runArgs.push(
+          "--ios_simulator_device",
+          destination.name,
+          "--platforms=@build_bazel_apple_support//platforms:ios_sim_arm64",
+        );
         terminal.write(`🎯 Using iOS Simulator: ${destination.name}\n\n`);
 
         await terminal.execute({
-          command: "bazel",
-          args: runArgs,
+          command: "sh",
+          args: ["-c", `cd "${bazelItem!.package.path}" && bazel ${runArgs.join(" ")}`],
         });
       } else if (destination.type === "iOSDevice") {
         // For physical devices: build then deploy with ios-deploy
@@ -2136,8 +2125,8 @@ export async function bazelRunCommand(context: ExtensionContext, bazelItem?: Baz
         terminal.write(`🔨 Step 1: Building for device (arm64)...\n`);
         const buildArgs = ["build", bazelItem!.target.buildLabel, "--ios_multi_cpus=arm64"];
         await terminal.execute({
-          command: "bazel",
-          args: buildArgs,
+          command: "sh",
+          args: ["-c", `cd "${bazelItem!.package.path}" && bazel ${buildArgs.join(" ")}`],
         });
 
         // Step 2: Deploy with ios-deploy
@@ -2202,9 +2191,10 @@ export async function bazelRunCommand(context: ExtensionContext, bazelItem?: Baz
         );
 
         // Fallback to regular bazel run
+        runArgs.push("--platforms=@build_bazel_apple_support//platforms:ios_sim_arm64");
         await terminal.execute({
-          command: "bazel",
-          args: runArgs,
+          command: "sh",
+          args: ["-c", `cd "${bazelItem!.package.path}" && bazel ${runArgs.join(" ")}`],
         });
       }
 
@@ -2240,18 +2230,15 @@ export async function bazelDebugCommand(context: ExtensionContext, bazelItem?: B
     callback: async (terminal) => {
       terminal.write(`Debugging Bazel target: ${bazelItem.target.buildLabel}\n\n`);
 
-      // Go to the workspace path first
-      await terminal.execute({
-        command: "cd",
-        args: [bazelItem.package.path],
-      });
-
       if (destination.type === "iOSSimulator") {
         // Build with debug symbols first
         terminal.write(`🔨 Building with debug symbols...\n`);
         await terminal.execute({
-          command: "bazel",
-          args: ["build", bazelItem.target.buildLabel, "--compilation_mode=dbg"],
+          command: "sh",
+          args: [
+            "-c",
+            `cd "${bazelItem.package.path}" && bazel build ${bazelItem.target.buildLabel} --compilation_mode=dbg`,
+          ],
         });
 
         // Get the bundle path
@@ -2303,8 +2290,8 @@ export async function bazelDebugCommand(context: ExtensionContext, bazelItem?: B
         // Build for device with debug symbols
         const buildArgs = ["build", bazelItem.target.buildLabel, "--ios_multi_cpus=arm64", "--compilation_mode=dbg"];
         await terminal.execute({
-          command: "bazel",
-          args: buildArgs,
+          command: "sh",
+          args: ["-c", `cd "${bazelItem.package.path}" && bazel ${buildArgs.join(" ")}`],
         });
 
         // Get the bundle path
@@ -2395,14 +2382,17 @@ export async function bazelDebugCommand(context: ExtensionContext, bazelItem?: B
 
         // Build with debug symbols
         await terminal.execute({
-          command: "bazel",
-          args: ["build", bazelItem.target.buildLabel, "--compilation_mode=dbg"],
+          command: "sh",
+          args: [
+            "-c",
+            `cd "${bazelItem.package.path}" && bazel build ${bazelItem.target.buildLabel} --compilation_mode=dbg --platforms=@build_bazel_apple_support//platforms:ios_sim_arm64`,
+          ],
         });
 
         // Fallback to regular bazel run
         await terminal.execute({
-          command: "bazel",
-          args: ["run", bazelItem.target.buildLabel],
+          command: "sh",
+          args: ["-c", `cd "${bazelItem.package.path}" && bazel run ${bazelItem.target.buildLabel}`],
         });
       }
 
