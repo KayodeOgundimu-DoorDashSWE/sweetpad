@@ -52,7 +52,14 @@ export class BazelTreeItem extends vscode.TreeItem {
       this.iconPath = new vscode.ThemeIcon("package", color);
     }
 
-    this.contextValue = "sweetpad.bazel.target";
+    // Set context value based on target type for conditional menu items
+    if (this.target.type === "test") {
+      this.contextValue = "sweetpad.bazel.target.test";
+    } else if (this.target.type === "binary") {
+      this.contextValue = "sweetpad.bazel.target.binary";
+    } else {
+      this.contextValue = "sweetpad.bazel.target.library";
+    }
 
     // Add type, package info, and selection indicator to description
     let description = `${this.target.type} • ${this.package.name}`;
