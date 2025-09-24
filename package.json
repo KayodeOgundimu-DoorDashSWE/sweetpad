@@ -1392,7 +1392,10 @@
     "prepare": "husky"
   },
   "lint-staged": {
-    "*.{ts,js,mjs,json,jsonc}": [
+    "*.{ts,js,mjs,jsonc}": [
+      "biome format --write"
+    ],
+    "!(package).json": [
       "biome format --write"
     ],
     "docs/**/*.md": [
