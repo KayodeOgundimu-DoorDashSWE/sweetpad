@@ -379,7 +379,7 @@
       {
         "command": "sweetpad.build.setDefaultScheme",
         "title": "SweetPad: Set scheme",
-        "icon": "$(file-directory)"
+        "icon": "$(target)"
       },
       {
         "command": "sweetpad.build.diagnoseSetup",
@@ -598,6 +598,7 @@
         "title": "SweetPad: Get app path for debugging",
         "icon": "$(file-code)"
       },
+
       {
         "command": "sweetpad.debugger.debuggingLaunch",
         "title": "SweetPad: Build & Run (for debugging)",
@@ -742,10 +743,15 @@
         {
           "command": "sweetpad.build.launch",
           "when": "viewItem == sweetpad.build.view.item",
-          "group": "inline@2"
+          "group": "inline@3"
         },
         {
           "command": "sweetpad.build.build",
+          "when": "viewItem == sweetpad.build.view.item",
+          "group": "inline@2"
+        },
+        {
+          "command": "sweetpad.build.setDefaultScheme",
           "when": "viewItem == sweetpad.build.view.item",
           "group": "inline@1"
         },
