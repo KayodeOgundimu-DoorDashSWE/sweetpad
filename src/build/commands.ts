@@ -1783,18 +1783,6 @@ export async function runPeripheryScan(context: ExtensionContext, terminal: Task
   // Build periphery scan command
   const peripheryArgs = ["scan", "--skip-build", "--index-store-path", finalIndexStorePath];
 
-  // Add default rules to retain public declarations (can be overridden by config)
-  const retainPublic = getWorkspaceConfig("periphery.retainPublic") ?? true;
-  if (retainPublic) {
-    peripheryArgs.push("--retain-public");
-  }
-
-  // Add rule to retain objc accessible declarations
-  const retainObjcAccessible = getWorkspaceConfig("periphery.retainObjcAccessible") ?? true;
-  if (retainObjcAccessible) {
-    peripheryArgs.push("--retain-objc-accessible");
-  }
-
   // Check for .periphery.yml file in workspace root (not package directory)
   const workspaceRoot = getWorkspacePath();
   const defaultPeripheryConfigPath = path.join(workspaceRoot, ".periphery.yml");
@@ -1843,6 +1831,22 @@ export async function runPeripheryScan(context: ExtensionContext, terminal: Task
   // Add config parameter if we have a valid path
   if (peripheryConfigPath) {
     peripheryArgs.push("--config", peripheryConfigPath);
+    terminal.write("📋 Using config file - command line retain options will be ignored\n");
+  } else {
+    // Only add command line arguments when NO config file is present
+    terminal.write("📋 No config file found - using command line options\n");
+
+    // Add default rules to retain public declarations
+    const retainPublic = getWorkspaceConfig("periphery.retainPublic") ?? true;
+    if (retainPublic) {
+      peripheryArgs.push("--retain-public");
+    }
+
+    // Add rule to retain objc accessible declarations
+    const retainObjcAccessible = getWorkspaceConfig("periphery.retainObjcAccessible") ?? true;
+    if (retainObjcAccessible) {
+      peripheryArgs.push("--retain-objc-accessible");
+    }
   }
 
   // Add format option if specified
