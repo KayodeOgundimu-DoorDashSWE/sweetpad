@@ -813,7 +813,7 @@ export async function buildApp(
   // Check if periphery scan should run after build
   const runPeripheryAfterBuild = getWorkspaceConfig("periphery.runAfterBuild") ?? false;
   if (runPeripheryAfterBuild && options.shouldBuild) {
-    await runPeripheryScan(context, terminal);
+    await runPeripheryScan(context, terminal, options.xcworkspace);
   }
 }
 
@@ -1676,7 +1676,7 @@ export async function diagnoseBuildSetupCommand(context: ExtensionContext): Prom
 /**
  * Run periphery scan to detect unused code
  */
-export async function runPeripheryScan(context: ExtensionContext, terminal: TaskTerminal) {
+export async function runPeripheryScan(context: ExtensionContext, terminal: TaskTerminal, xcworkspace?: string) {
   context.updateProgressStatus("Running Periphery scan");
   terminal.write("🔍 Starting Periphery scan for unused code...\n");
   terminal.write("📋 Default rules enabled: retain public, objc-accessible\n");
@@ -1690,6 +1690,18 @@ export async function runPeripheryScan(context: ExtensionContext, terminal: Task
   } catch (error) {
     terminal.write("❌ Periphery is not installed. Install it using: brew install periphery\n");
     throw new ExtensionError("Periphery is not installed");
+  }
+
+  // Detect project type using the same logic as buildApp
+  const isSpmProject = xcworkspace?.endsWith("Package.swift") ?? false;
+  let packageDir: string | undefined;
+
+  if (isSpmProject && xcworkspace) {
+    packageDir = path.dirname(xcworkspace);
+    terminal.write("📦 Detected Swift Package Manager project\n");
+    terminal.write(`📂 Package directory: ${packageDir}\n`);
+  } else {
+    terminal.write("🛠 Detected Xcode project\n");
   }
 
   // Get derived data path and construct index store path
@@ -1722,32 +1734,54 @@ export async function runPeripheryScan(context: ExtensionContext, terminal: Task
     }
   }
 
+  // Determine the correct index store path for the project type
+  let finalIndexStorePath: string;
+
+  if (isSpmProject && packageDir) {
+    // For SPM projects, use the SPM index store path
+    finalIndexStorePath = path.join(packageDir, ".build", "arm64-apple-macosx", "debug", "index", "store");
+    terminal.write(`🗂 Using SPM index store: ${finalIndexStorePath}\n`);
+  } else {
+    // For Xcode projects, use the Xcode index store path
+    finalIndexStorePath = indexStorePath;
+  }
+
   // Check if index store path exists
-  const indexStoreExists = await isFileExists(indexStorePath);
+  const indexStoreExists = await isFileExists(finalIndexStorePath);
   if (!indexStoreExists) {
-    terminal.write(`❌ Index store path does not exist: ${indexStorePath}\n`);
-    terminal.write("💡 Make sure you have built the project first to generate the index store.\n");
-    terminal.write("💡 You can run 'Build' first, then 'Periphery Scan', or use 'Build & Periphery Scan'.\n");
+    if (isSpmProject) {
+      terminal.write(`❌ SPM index store path does not exist: ${finalIndexStorePath}\n`);
+      terminal.write("💡 Make sure you have built the SPM project first to generate the index store.\n");
+    } else {
+      terminal.write(`❌ Index store path does not exist: ${finalIndexStorePath}\n`);
+      terminal.write("💡 Make sure you have built the project first to generate the index store.\n");
 
-    // Show available derived data folders if possible
-    try {
-      const defaultDerivedDataPath = path.join(process.env.HOME || "~", "Library", "Developer", "Xcode", "DerivedData");
-      const derivedDataFolders = await readdir(defaultDerivedDataPath);
-      if (derivedDataFolders.length > 0) {
-        terminal.write("📁 Available derived data folders:\n");
-        derivedDataFolders.slice(0, 5).forEach((folder: string) => {
-          terminal.write(`   - ${folder}\n`);
-        });
+      // Show available derived data folders if possible
+      try {
+        const defaultDerivedDataPath = path.join(
+          process.env.HOME || "~",
+          "Library",
+          "Developer",
+          "Xcode",
+          "DerivedData",
+        );
+        const derivedDataFolders = await readdir(defaultDerivedDataPath);
+        if (derivedDataFolders.length > 0) {
+          terminal.write("📁 Available derived data folders:\n");
+          derivedDataFolders.slice(0, 5).forEach((folder: string) => {
+            terminal.write(`   - ${folder}\n`);
+          });
+        }
+      } catch (error) {
+        // Ignore error in showing available folders
       }
-    } catch (error) {
-      // Ignore error in showing available folders
     }
-
+    terminal.write("💡 You can run 'Build' first, then 'Periphery Scan', or use 'Build & Periphery Scan'.\n");
     throw new ExtensionError("Index store path does not exist. Build the project first.");
   }
 
   // Build periphery scan command
-  const peripheryArgs = ["scan", "--skip-build", "--index-store-path", indexStorePath];
+  const peripheryArgs = ["scan", "--skip-build", "--index-store-path", finalIndexStorePath];
 
   // Add default rules to retain public declarations (can be overridden by config)
   const retainPublic = getWorkspaceConfig("periphery.retainPublic") ?? true;
@@ -1761,9 +1795,9 @@ export async function runPeripheryScan(context: ExtensionContext, terminal: Task
     peripheryArgs.push("--retain-objc-accessible");
   }
 
-  // Check for .periphery.yml file in project root first
-  const projectRoot = getWorkspacePath();
-  const defaultPeripheryConfigPath = path.join(projectRoot, ".periphery.yml");
+  // Check for .periphery.yml file in workspace root (not package directory)
+  const workspaceRoot = getWorkspacePath();
+  const defaultPeripheryConfigPath = path.join(workspaceRoot, ".periphery.yml");
 
   let peripheryConfigPath: string | undefined;
 
@@ -1788,7 +1822,9 @@ export async function runPeripheryScan(context: ExtensionContext, terminal: Task
       });
 
       if (userConfigPath && userConfigPath.trim()) {
-        const resolvedPath = path.isAbsolute(userConfigPath) ? userConfigPath : path.join(projectRoot, userConfigPath);
+        const resolvedPath = path.isAbsolute(userConfigPath)
+          ? userConfigPath
+          : path.join(workspaceRoot, userConfigPath);
 
         const configExists = await isFileExists(resolvedPath);
         if (configExists) {
@@ -1820,10 +1856,21 @@ export async function runPeripheryScan(context: ExtensionContext, terminal: Task
   }
 
   try {
-    await terminal.execute({
-      command: "periphery",
-      args: peripheryArgs,
-    });
+    if (isSpmProject && packageDir) {
+      // For SPM projects, run periphery from the package directory using the same pattern as buildApp
+      terminal.write(`📂 Running Periphery from: ${packageDir}\n`);
+      const peripheryCommandString = ["periphery", ...peripheryArgs].map((arg) => `"${arg}"`).join(" ");
+      await terminal.execute({
+        command: "sh",
+        args: ["-c", `cd "${packageDir}" && ${peripheryCommandString}`],
+      });
+    } else {
+      // For Xcode projects, run from current directory
+      await terminal.execute({
+        command: "periphery",
+        args: peripheryArgs,
+      });
+    }
     terminal.write("✅ Periphery scan completed successfully!\n");
   } catch (error) {
     terminal.write("⚠️  Periphery scan completed with findings\n");
@@ -1875,7 +1922,7 @@ export async function buildAndPeripheryScanCommand(context: ExtensionContext, it
       });
 
       // Then run periphery scan
-      await runPeripheryScan(context, terminal);
+      await runPeripheryScan(context, terminal, xcworkspace);
     },
   });
 }
@@ -1909,7 +1956,7 @@ export async function peripheryScanCommand(context: ExtensionContext, item?: Bui
     lock: "sweetpad.periphery",
     terminateLocked: true,
     callback: async (terminal) => {
-      await runPeripheryScan(context, terminal);
+      await runPeripheryScan(context, terminal, xcworkspace);
     },
   });
 }
