@@ -24,6 +24,7 @@ import { exec } from "../common/exec";
 import { getWorkspaceRelativePath, isFileExists, readJsonFile, removeDirectory, tempFilePath } from "../common/files";
 import { readdir } from "node:fs/promises";
 import { commonLogger } from "../common/logger";
+import { Timer } from "../common/timer";
 
 import { type Command, type TaskTerminal, runTask } from "../common/tasks";
 import { assertUnreachable } from "../common/types";
@@ -50,6 +51,11 @@ import {
 function writeWatchMarkers(terminal: TaskTerminal) {
   terminal.write("🍭 SweetPad: watch marker (start)\n");
   terminal.write("🍩 SweetPad: watch marker (end)\n\n");
+}
+
+function writeTimingResults(terminal: TaskTerminal, timer: Timer, toolType: "xcodebuild" | "bazel", operation: string) {
+  const elapsedSeconds = (timer.elapsed / 1000).toFixed(2);
+  terminal.write(`\n⏱️  ${toolType} ${operation} total time: ${elapsedSeconds}s\n`, { newLine: true });
 }
 
 async function ensureAppPathExists(appPath: string | undefined): Promise<string> {
@@ -591,6 +597,7 @@ export async function buildApp(
     debug: boolean;
   },
 ) {
+  const timer = new Timer();
   vscode.window.showInformationMessage(`Building app for scheme: ${options.scheme}...`);
   terminal.write("Preparing to execute buildApp command...\n");
   const useXcbeatify = isXcbeautifyEnabled() && (await getIsXcbeautifyInstalled());
@@ -648,6 +655,7 @@ export async function buildApp(
     });
 
     await restartSwiftLSP();
+    writeTimingResults(terminal, timer, "xcodebuild", "swift test");
     return;
   }
 
@@ -705,6 +713,13 @@ export async function buildApp(
     }
 
     await restartSwiftLSP();
+    // Determine operation type for timing
+    const operationTypes = [];
+    if (options.shouldClean) operationTypes.push("clean");
+    if (options.shouldBuild) operationTypes.push("build");
+    if (options.shouldTest) operationTypes.push("test");
+    const operation = operationTypes.join(" + ") || "spm";
+    writeTimingResults(terminal, timer, "xcodebuild", operation);
     return;
   }
 
@@ -809,6 +824,14 @@ export async function buildApp(
   }
 
   await restartSwiftLSP();
+
+  // Determine operation type for timing
+  const operationTypes = [];
+  if (options.shouldClean) operationTypes.push("clean");
+  if (options.shouldBuild) operationTypes.push("build");
+  if (options.shouldTest) operationTypes.push("test");
+  const operation = operationTypes.join(" + ") || "build";
+  writeTimingResults(terminal, timer, "xcodebuild", operation);
 
   // Check if periphery scan should run after build
   const runPeripheryAfterBuild = getWorkspaceConfig("periphery.runAfterBuild") ?? false;
@@ -2010,6 +2033,7 @@ export async function bazelBuildCommand(context: ExtensionContext, bazelItem?: B
     lock: "sweetpad.bazel.build",
     terminateLocked: true,
     callback: async (terminal) => {
+      const timer = new Timer();
       terminal.write(`Building Bazel target: ${bazelItem!.target.buildLabel}\n\n`);
 
       // Use terminal.execute for streaming output
@@ -2022,6 +2046,7 @@ export async function bazelBuildCommand(context: ExtensionContext, bazelItem?: B
       });
 
       terminal.write(`\n✅ Build completed for ${bazelItem!.target.name}\n`);
+      writeTimingResults(terminal, timer, "bazel", "build");
     },
   });
 }
@@ -2052,6 +2077,7 @@ export async function bazelTestCommand(context: ExtensionContext, bazelItem?: Ba
     lock: "sweetpad.bazel.test",
     terminateLocked: true,
     callback: async (terminal) => {
+      const timer = new Timer();
       terminal.write(`Running Bazel tests: ${bazelItem!.target.testLabel}\n\n`);
 
       // Use terminal.execute for streaming output
@@ -2061,6 +2087,7 @@ export async function bazelTestCommand(context: ExtensionContext, bazelItem?: Ba
       });
 
       terminal.write(`\n✅ Tests completed for ${bazelItem!.target.name}\n`);
+      writeTimingResults(terminal, timer, "bazel", "test");
     },
   });
 }
