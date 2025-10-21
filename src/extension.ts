@@ -182,6 +182,7 @@ export async function activate(context: vscode.ExtensionContext) {
     d(tree("sweetpad.view.workspaces", workspaceTreeProvider));
     d(command("sweetpad.build.refreshView", async () => buildManager.refresh()));
     d(command("sweetpad.build.launch", launchCommand));
+    d(command("sweetpad.build.debugLaunch", debuggingLaunchCommand));
     d(command("sweetpad.build.run", runCommand));
     d(command("sweetpad.build.build", buildCommand));
     d(command("sweetpad.build.clean", cleanCommand));

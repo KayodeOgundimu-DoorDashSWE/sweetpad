@@ -11,6 +11,17 @@ import { assertUnreachable } from "../types";
 import { XcodeWorkspace } from "../xcode/workspace";
 import { parseXcodeProject } from "../xcode/project";
 
+// In-memory cache for build settings (cleared on extension restart)
+const buildSettingsCache = new Map<string, XcodeBuildSettings[]>();
+
+/**
+ * Clear the build settings cache
+ * Call this when build configurations change or projects are modified
+ */
+export function clearBuildSettingsCache(): void {
+  buildSettingsCache.clear();
+}
+
 export type SimulatorOutput = {
   dataPath: string;
   dataPathSize: number;
@@ -159,6 +170,13 @@ async function getBuildSettingsList(options: {
   sdk: string | undefined;
   xcworkspace: string;
 }): Promise<XcodeBuildSettings[]> {
+  // Cache key based on all parameters
+  const cacheKey = `${options.xcworkspace}:${options.scheme}:${options.configuration}:${options.sdk ?? "default"}`;
+  const cached = buildSettingsCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const derivedDataPath = prepareDerivedDataPath();
 
   // Handle SPM projects
@@ -190,27 +208,27 @@ async function getBuildSettingsList(options: {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (!line) {
-        commonLogger.warn("Empty line in build settings output", {
-          stdout: stdout,
-          index: i,
-        });
-        continue;
+        continue; // Skip empty lines without expensive logging
       }
 
       if (line.startsWith("{") || line.startsWith("[")) {
         const data = lines.slice(i).join("\n");
         const output = JSON.parse(data) as BuildSettingsOutput;
         if (output.length === 0) {
+          buildSettingsCache.set(cacheKey, []);
           return [];
         }
-        return output.map((output) => {
+        const result = output.map((output) => {
           return new XcodeBuildSettings({
             settings: output.buildSettings,
             target: output.target,
           });
         });
+        buildSettingsCache.set(cacheKey, result);
+        return result;
       }
     }
+    buildSettingsCache.set(cacheKey, []);
     return [];
   }
 
@@ -241,27 +259,27 @@ async function getBuildSettingsList(options: {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line) {
-      commonLogger.warn("Empty line in build settings output", {
-        stdout: stdout,
-        index: i,
-      });
-      continue;
+      continue; // Skip empty lines without expensive logging
     }
 
     if (line.startsWith("{") || line.startsWith("[")) {
       const data = lines.slice(i).join("\n");
       const output = JSON.parse(data) as BuildSettingsOutput;
       if (output.length === 0) {
+        buildSettingsCache.set(cacheKey, []);
         return [];
       }
-      return output.map((output) => {
+      const result = output.map((output) => {
         return new XcodeBuildSettings({
           settings: output.buildSettings,
           target: output.target,
         });
       });
+      buildSettingsCache.set(cacheKey, result);
+      return result;
     }
   }
+  buildSettingsCache.set(cacheKey, []);
   return [];
 }
 

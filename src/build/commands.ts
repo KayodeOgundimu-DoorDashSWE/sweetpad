@@ -196,12 +196,35 @@ export async function runOniOSSimulator(
 
   // Run app
   context.updateProgressStatus(`Running "${options.scheme}" on "${simulator.name}"`);
-  await terminal.execute({
-    command: "xcrun",
-    args: launchArgs,
-    // should be prefixed with `SIMCTL_CHILD_` to pass to the child process
-    env: Object.fromEntries(Object.entries(options.launchEnv).map(([key, value]) => [`SIMCTL_CHILD_${key}`, value])),
-  });
+
+  if (options.debug) {
+    // When debugging, run the launch command in the background (non-blocking)
+    // because --wait-for-debugger will block until the debugger attaches
+    const launchPromise = terminal
+      .execute({
+        command: "xcrun",
+        args: launchArgs,
+        // should be prefixed with `SIMCTL_CHILD_` to pass to the child process
+        env: Object.fromEntries(
+          Object.entries(options.launchEnv).map(([key, value]) => [`SIMCTL_CHILD_${key}`, value]),
+        ),
+      })
+      .catch((error) => {
+        commonLogger.warn(`App launch exited: ${error}`);
+      });
+
+    // Give the app a moment to launch and pause
+    terminal.write(`⏱️  Waiting for app to launch with debugger flag...\n`);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  } else {
+    // Normal launch (non-debug) - wait for completion
+    await terminal.execute({
+      command: "xcrun",
+      args: launchArgs,
+      // should be prefixed with `SIMCTL_CHILD_` to pass to the child process
+      env: Object.fromEntries(Object.entries(options.launchEnv).map(([key, value]) => [`SIMCTL_CHILD_${key}`, value])),
+    });
+  }
 }
 
 export async function runOniOSDevice(
@@ -1010,6 +1033,83 @@ async function commonLaunchCommand(
         });
       } else {
         assertUnreachable(destination);
+      }
+
+      // If debugging, automatically start the debugger
+      if (options.debug) {
+        terminal.write(`\n🐛 Attempting to start VSCode debugger...\n`);
+
+        // Give the app a moment to fully launch and pause
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+
+        try {
+          const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+          const launchContext = context.getWorkspaceState("build.lastLaunchedApp");
+
+          terminal.write(`   Launch context: ${JSON.stringify(launchContext)}\n`);
+
+          if (!launchContext?.appPath) {
+            terminal.write(`   ⚠️  No app path found in launch context.\n`);
+            terminal.write(`   Press F5 to attach debugger manually.\n\n`);
+            return;
+          }
+
+          // Extract app name from path for attaching
+          const appPath = launchContext.appPath;
+          const appName = path.basename(appPath, ".app");
+
+          terminal.write(`   App name: ${appName}\n`);
+          terminal.write(`   App path: ${appPath}\n`);
+
+          const debugConfig: vscode.DebugConfiguration = {
+            type: "lldb-dap",
+            request: "attach",
+            name: "SweetPad: Debug",
+            debuggerRoot: workspaceFolder?.uri.fsPath || "${workspaceFolder}",
+            program: appPath,
+            waitFor: true,
+            internalConsoleOptions: "openOnSessionStart",
+          };
+
+          terminal.write(`   Debug config:\n`);
+          terminal.write(`     - type: ${debugConfig.type}\n`);
+          terminal.write(`     - request: ${debugConfig.request}\n`);
+          terminal.write(`     - program: ${debugConfig.program}\n`);
+          terminal.write(`     - waitFor: ${debugConfig.waitFor}\n`);
+
+          commonLogger.log("Starting Xcode debug session", {
+            workspaceFolder: workspaceFolder?.name,
+            debugConfig,
+            launchContext,
+          });
+
+          terminal.write(`   Calling vscode.debug.startDebugging()...\n`);
+          const started = await vscode.debug.startDebugging(workspaceFolder, debugConfig);
+
+          terminal.write(`   Result: ${started ? "SUCCESS" : "FAILED"}\n`);
+
+          if (started) {
+            terminal.write(`\n   ✅ Debugger attached successfully!\n\n`);
+            terminal.write(`🎉 Happy debugging! Set breakpoints and inspect variables.\n`);
+            terminal.write(`   (The terminal will remain open until you stop debugging)\n\n`);
+            commonLogger.log("Xcode debugger started successfully");
+          } else {
+            terminal.write(`\n   ⚠️  Failed to start debugger automatically.\n`);
+            terminal.write(`   Please start debugging manually by pressing F5 or using Run & Debug panel.\n\n`);
+            commonLogger.warn("Failed to start Xcode debugger - returned false");
+          }
+        } catch (error) {
+          terminal.write(`\n   ❌ Error starting debugger: ${error}\n`);
+          terminal.write(`   Error type: ${error instanceof Error ? error.constructor.name : typeof error}\n`);
+          if (error instanceof Error) {
+            terminal.write(`   Error message: ${error.message}\n`);
+            if (error.stack) {
+              terminal.write(`   Stack trace:\n${error.stack}\n`);
+            }
+          }
+          terminal.write(`\n   Please start debugging manually by pressing F5.\n\n`);
+          commonLogger.error("Error starting Xcode debugger", { error });
+        }
       }
     },
   });
@@ -2232,6 +2332,7 @@ export async function bazelRunCommand(context: ExtensionContext, bazelItem?: Baz
 
 /**
  * Debug a Bazel target (launch app with debug support)
+ * Uses the enhanced debug workflow that includes debugserver setup
  */
 export async function bazelDebugCommand(context: ExtensionContext, bazelItem?: BazelTreeItem): Promise<void> {
   var bazelItem = bazelItem || context.buildManager.getSelectedBazelTarget();
@@ -2250,180 +2351,24 @@ export async function bazelDebugCommand(context: ExtensionContext, bazelItem?: B
   context.updateProgressStatus("Searching for destination");
   const destination = await askDestinationToRunOn(context, null);
 
+  // Get launch configuration
+  const launchArgs = getWorkspaceConfig("build.launchArgs") ?? [];
+  const launchEnv = getWorkspaceConfig("build.launchEnv") ?? {};
+
   await runTask(context, {
     name: `Bazel Debug: ${bazelItem.target.name}`,
     lock: "sweetpad.bazel.debug",
     terminateLocked: true,
     callback: async (terminal) => {
-      terminal.write(`Debugging Bazel target: ${bazelItem.target.buildLabel}\n\n`);
+      // Import the enhanced debug workflow
+      const { enhancedBazelDebugCommand } = await import("../debugger/bazel-debug.js");
 
-      if (destination.type === "iOSSimulator") {
-        // Build with debug symbols first
-        terminal.write(`🔨 Building with debug symbols...\n`);
-        await terminal.execute({
-          command: "sh",
-          args: [
-            "-c",
-            `cd "${bazelItem.package.path}" && bazel build ${bazelItem.target.buildLabel} --compilation_mode=dbg`,
-          ],
-        });
-
-        // Get the bundle path
-        const packagePath = bazelItem.target.buildLabel.replace("//", "").replace(":", "/");
-        const appPath = `bazel-bin/${packagePath}/${bazelItem.target.name}.app`;
-
-        terminal.write(`🎯 Using iOS Simulator: ${destination.name}\n`);
-        terminal.write(`📦 App bundle: ${appPath}\n`);
-        terminal.write(`⏳ Launching with wait-for-debugger...\n\n`);
-
-        // Get the bundle identifier (we'll need to extract this from the app)
-        const bundleId = await getBundleIdentifierFromApp(appPath);
-        if (!bundleId) {
-          terminal.write(`⚠️  Could not determine bundle identifier, using target name as fallback\n`);
-        }
-        const finalBundleId = bundleId || bazelItem.target.name;
-
-        // Launch with wait for debugger
-        await terminal.execute({
-          command: "xcrun",
-          args: [
-            "simctl",
-            "launch",
-            "--console-pty",
-            "--wait-for-debugger",
-            "--terminate-running-process",
-            destination.udid,
-            finalBundleId,
-          ],
-        });
-
-        // Store launch context for debugger
-        const fullAppPath = path.resolve(bazelItem.package.path, appPath);
-        context.updateWorkspaceState("build.lastLaunchedApp", {
-          type: "bazel-simulator",
-          appPath: fullAppPath,
-          targetName: bazelItem.target.name,
-          buildLabel: bazelItem.target.buildLabel,
-          simulatorId: destination.udid,
-          simulatorName: destination.name,
-        } satisfies LastLaunchedAppBazelSimulatorContext);
-
-        terminal.write(`🐛 App launched with debugger support. You can now attach the debugger.\n`);
-        terminal.write(`💡 Use the "SweetPad: Build and Run (Wait for debugger)" debug configuration.\n`);
-      } else if (destination.type === "iOSDevice") {
-        terminal.write(`📱 Using iOS Device: ${destination.name} (${destination.udid})\n\n`);
-        terminal.write(`🔨 Building for device with debug symbols...\n`);
-
-        // Build for device with debug symbols
-        const buildArgs = ["build", bazelItem.target.buildLabel, "--ios_multi_cpus=arm64", "--compilation_mode=dbg"];
-        await terminal.execute({
-          command: "sh",
-          args: ["-c", `cd "${bazelItem.package.path}" && bazel ${buildArgs.join(" ")}`],
-        });
-
-        // Get the bundle path
-        const packagePath = bazelItem.target.buildLabel.replace("//", "").replace(":", "/");
-        const ipaPath = `bazel-bin/${packagePath}.ipa`;
-        const appPath = `bazel-bin/${packagePath}.app`;
-
-        // Install and launch with debugger support
-        terminal.write(`📲 Installing and launching with debug support...\n`);
-
-        let bundlePath = ipaPath;
-        try {
-          await terminal.execute({
-            command: "test",
-            args: ["-e", ipaPath],
-          });
-          bundlePath = ipaPath;
-          terminal.write(`📦 Found bundle: ${ipaPath}\n`);
-        } catch {
-          try {
-            await terminal.execute({
-              command: "test",
-              args: ["-e", appPath],
-            });
-            bundlePath = appPath;
-            terminal.write(`📦 Found bundle: ${appPath}\n`);
-          } catch {
-            terminal.write(`⚠️  Bundle not found at expected paths, using: ${ipaPath}\n`);
-            bundlePath = ipaPath;
-          }
-        }
-
-        // Use devicectl for debugging support on devices
-        try {
-          const fullAppPath = path.resolve(bazelItem.package.path, bundlePath);
-
-          // Install the app
-          await terminal.execute({
-            command: "xcrun",
-            args: ["devicectl", "device", "install", "app", "--device", destination.udid, bundlePath],
-          });
-
-          // Get bundle identifier
-          const bundleId = await getBundleIdentifierFromApp(bundlePath);
-          if (!bundleId) {
-            throw new Error("Could not determine bundle identifier");
-          }
-
-          // Launch with debugger support
-          await terminal.execute({
-            command: "xcrun",
-            args: [
-              "devicectl",
-              "device",
-              "process",
-              "launch",
-              "--device",
-              destination.udid,
-              "--start-stopped",
-              bundleId,
-            ],
-          });
-
-          // Store launch context for debugger
-          context.updateWorkspaceState("build.lastLaunchedApp", {
-            type: "bazel-device",
-            appPath: fullAppPath,
-            targetName: bazelItem.target.name,
-            buildLabel: bazelItem.target.buildLabel,
-            destinationId: destination.udid,
-            destinationType: destination.type,
-          } satisfies LastLaunchedAppBazelDeviceContext);
-
-          terminal.write(`🐛 App launched with debugger support on device.\n`);
-          terminal.write(`💡 Use the "SweetPad: Build and Run (Wait for debugger)" debug configuration.\n`);
-        } catch (error) {
-          terminal.write(`⚠️  Failed to launch with devicectl, falling back to ios-deploy\n`);
-          // Fallback to ios-deploy without debugger support
-          await terminal.execute({
-            command: "ios-deploy",
-            args: ["--id", destination.udid, "--bundle", bundlePath, "--debug"],
-          });
-        }
-      } else {
-        terminal.write(
-          `ℹ️  Selected destination: ${destination.typeLabel} (${destination.name}). Note: Bazel debug may not support this destination type.\n\n`,
-        );
-
-        // Build with debug symbols
-        await terminal.execute({
-          command: "sh",
-          args: [
-            "-c",
-            `cd "${bazelItem.package.path}" && bazel build ${bazelItem.target.buildLabel} --compilation_mode=dbg --platforms=@build_bazel_apple_support//platforms:ios_sim_arm64`,
-          ],
-        });
-
-        // Fallback to regular bazel run
-        await terminal.execute({
-          command: "sh",
-          args: ["-c", `cd "${bazelItem.package.path}" && bazel run ${bazelItem.target.buildLabel}`],
-        });
-      }
-
-      terminal.write(`\n✅ Debug launch completed for ${bazelItem.target.name}\n`);
+      await enhancedBazelDebugCommand(context, terminal, {
+        bazelItem,
+        destination: destination as any,
+        launchArgs,
+        launchEnv,
+      });
     },
   });
 }

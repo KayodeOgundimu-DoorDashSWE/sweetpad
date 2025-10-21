@@ -326,6 +326,12 @@
         "icon": "$(sweetpad-player-play)"
       },
       {
+        "command": "sweetpad.build.debugLaunch",
+        "title": "SweetPad: Build & Debug",
+        "icon": "$(debug-alt)",
+        "description": "Build and launch with debugger"
+      },
+      {
         "command": "sweetpad.build.run",
         "title": "SweetPad: Run (without Build)",
         "icon": "$(play)"
@@ -439,6 +445,12 @@
         "title": "SweetPad: Bazel Run",
         "icon": "$(run)",
         "description": "Run Bazel target on iOS simulator"
+      },
+      {
+        "command": "sweetpad.bazel.debug",
+        "title": "SweetPad: Bazel Debug",
+        "icon": "$(debug-alt)",
+        "description": "Debug Bazel target on iOS simulator or device"
       },
       {
         "command": "sweetpad.bazel.runSelected",
@@ -746,6 +758,11 @@
           "group": "inline@3"
         },
         {
+          "command": "sweetpad.build.debugLaunch",
+          "when": "viewItem == sweetpad.build.view.item",
+          "group": "inline@4"
+        },
+        {
           "command": "sweetpad.build.build",
           "when": "viewItem == sweetpad.build.view.item",
           "group": "inline@2"
@@ -769,6 +786,11 @@
           "command": "sweetpad.build.run",
           "when": "viewItem == sweetpad.build.view.item",
           "group": "context@3"
+        },
+        {
+          "command": "sweetpad.build.debugLaunch",
+          "when": "viewItem == sweetpad.build.view.item",
+          "group": "context@3.5"
         },
         {
           "command": "sweetpad.build.test",
@@ -831,6 +853,11 @@
           "group": "inline@3"
         },
         {
+          "command": "sweetpad.bazel.debug",
+          "when": "viewItem == sweetpad.bazel.target.binary",
+          "group": "inline@4"
+        },
+        {
           "command": "sweetpad.bazel.selectTarget",
           "when": "viewItem =~ /sweetpad\\.bazel\\.target/",
           "group": "context@1"
@@ -849,6 +876,11 @@
           "command": "sweetpad.bazel.run",
           "when": "viewItem == sweetpad.bazel.target.binary",
           "group": "context@4"
+        },
+        {
+          "command": "sweetpad.bazel.debug",
+          "when": "viewItem == sweetpad.bazel.target.binary",
+          "group": "context@5"
         }
       ],
       "testing/item/context": [
