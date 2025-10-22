@@ -1061,21 +1061,17 @@ async function commonLaunchCommand(
           terminal.write(`   App name: ${appName}\n`);
           terminal.write(`   App path: ${appPath}\n`);
 
+          // Use sweetpad-lldb provider (same as pressing F5)
+          // The provider will handle the configuration based on launch context
           const debugConfig: vscode.DebugConfiguration = {
-            type: "lldb-dap",
+            type: "sweetpad-lldb",
             request: "attach",
             name: "SweetPad: Debug",
-            debuggerRoot: workspaceFolder?.uri.fsPath || "${workspaceFolder}",
-            program: appPath,
-            waitFor: true,
-            internalConsoleOptions: "openOnSessionStart",
           };
 
           terminal.write(`   Debug config:\n`);
           terminal.write(`     - type: ${debugConfig.type}\n`);
           terminal.write(`     - request: ${debugConfig.request}\n`);
-          terminal.write(`     - program: ${debugConfig.program}\n`);
-          terminal.write(`     - waitFor: ${debugConfig.waitFor}\n`);
 
           commonLogger.log("Starting Xcode debug session", {
             workspaceFolder: workspaceFolder?.name,

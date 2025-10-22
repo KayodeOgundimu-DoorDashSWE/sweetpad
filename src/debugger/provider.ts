@@ -160,31 +160,15 @@ class DynamicDebugConfigurationProvider implements vscode.DebugConfigurationProv
     config: vscode.DebugConfiguration,
     launchContext: LastLaunchedAppBazelSimulatorContext,
   ): Promise<vscode.DebugConfiguration> {
-    // For Bazel debugging, we use the enhanced workflow where debugserver is already running
-    // and listening on a port (default 6667). The debugger connects to this port.
-
-    const debugPort = config.debugPort || 6667;
-
-    // Configure LLDB to connect to the already-running debugserver
     config.type = "lldb";
-    config.request = "custom"; // Use custom mode to connect to existing debugserver
+    config.waitFor = true;
+    config.request = "attach";
     config.program = launchContext.appPath;
-
-    // LLDB will connect to debugserver via these commands
-    config.initCommands = [
-      ...(config.initCommands || []),
-      // Connect to the debugserver
-      `gdb-remote localhost:${debugPort}`,
-    ];
-
-    // Optional: Set up source map if needed
-    config.sourceMap = config.sourceMap || {};
 
     commonLogger.log("Resolved Bazel simulator debug configuration", {
       config: config,
       targetName: launchContext.targetName,
       buildLabel: launchContext.buildLabel,
-      debugPort,
     });
     return config;
   }
@@ -193,19 +177,15 @@ class DynamicDebugConfigurationProvider implements vscode.DebugConfigurationProv
     config: vscode.DebugConfiguration,
     launchContext: LastLaunchedAppBazelDeviceContext,
   ): Promise<vscode.DebugConfiguration> {
-    // For Bazel device debugging, we use the enhanced workflow where debugserver is already running
-    // The debugserver is attached to the app process on the device
-
     const deviceUDID = launchContext.destinationId;
     const hostAppPath = launchContext.appPath;
-    const targetName = launchContext.targetName;
-    const debugPort = config.debugPort || 6667;
+    const targetName = launchContext.targetName; // Use target name as app name for Bazel
 
-    // Wait for the process to launch and get its details
+    // We need to find the device app path and the process id
     const process = await waitForProcessToLaunch(this.context, {
       deviceId: deviceUDID,
-      appName: `${targetName}.app`,
-      timeoutMs: 15000,
+      appName: `${targetName}.app`, // Bazel apps typically use target name
+      timeoutMs: 15000, // wait for 15 seconds before giving up
     });
 
     const deviceExecutableURL = process.executable;
@@ -213,42 +193,60 @@ class DynamicDebugConfigurationProvider implements vscode.DebugConfigurationProv
       throw new Error("No device app path found");
     }
 
+    // Remove the "file://" prefix and remove everything after the app name
+    // Result should be something like:
+    //  - "/private/var/containers/Bundle/Application/5045C7CE-DFB9-4C17-BBA9-94D8BCD8F565/MyBazelApp.app"
     const deviceAppPath = deviceExecutableURL.match(/^file:\/\/(.*\.app)/)?.[1];
     const processId = process.processIdentifier;
+
     const continueOnAttach = config.continueOnAttach ?? true;
 
-    // Configure LLDB to connect to the debugserver on the device
-    config.type = "lldb";
-    config.request = "custom";
-    config.program = hostAppPath;
-
-    // LLDB commands for device debugging
+    // LLDB commands executed upon debugger startup.
     config.initCommands = [
       ...(config.initCommands || []),
+      // By default, LLDB runs against the local host platform. This command switches LLDB to a remote
+      // iOS environment, necessary for debugging iOS apps on a device.
       "platform select remote-ios",
+      // Don't stop after attaching to the process:
+      // -n false — Should LLDB print a "stopped with SIGSTOP" message in the UI? Be silent—no notification to you
+      // -p true — Should LLDB forward the signal on to your app? Deliver SIGSTOP to the process
+      // -s false — Should LLDB pause (break into the debugger) when this signal arrives?  Don't break; just run LLDB's signal handler logic
       ...(continueOnAttach ? ["process handle SIGSTOP -p true -s false -n false"] : []),
-      // Connect to debugserver
-      `gdb-remote localhost:${debugPort}`,
     ];
 
+    // LLDB commands executed just before launching of attaching to the debuggee.
     config.preRunCommands = [
       ...(config.preRunCommands || []),
+      // Adjusts the loaded module's file specification to point to the actual location of the binary on the remote device.
+      // This ensures symbol resolution and breakpoints align correctly with the actual remote binary.
       `script lldb.target.module[0].SetPlatformFileSpec(lldb.SBFileSpec('${deviceAppPath}'))`,
     ];
 
+    // LLDB commands executed to create/attach the debuggee process.
+    config.processCreateCommands = [
+      ...(config.processCreateCommands || []),
+      // Tells LLDB which physical iOS device (by UDID) you want to attach to.
+      `script lldb.debugger.HandleCommand("device select ${deviceUDID}")`,
+      // Attaches LLDB to the already-launched process on that device.
+      `script lldb.debugger.HandleCommand("device process attach --continue --pid ${processId}")`,
+    ];
+
+    // LLDB commands executed after the debuggee process has been created/attached.
     config.postRunCommands = [
       ...(config.postRunCommands || []),
-      `script print("SweetPad: Happy debugging Bazel target '${targetName}' on device!")`,
+      `script print("SweetPad: Happy debugging Bazel target '${targetName}'!")`,
     ];
+
+    config.type = "lldb";
+    config.request = "attach";
+    config.program = hostAppPath;
+    config.pid = processId.toString();
 
     commonLogger.log("Resolved Bazel device debug configuration", {
       config: config,
       targetName: launchContext.targetName,
       buildLabel: launchContext.buildLabel,
-      debugPort,
-      processId,
     });
-
     return config;
   }
 
@@ -298,9 +296,65 @@ class DynamicDebugConfigurationProvider implements vscode.DebugConfigurationProv
   }
 }
 
+/**
+ * Bazel-specific debug configuration provider
+ * Handles debug configurations for Bazel-built apps with custom debugserver workflow
+ */
+class BazelDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
+  context: ExtensionContext;
+  constructor(options: { context: ExtensionContext }) {
+    this.context = options.context;
+  }
+
+  async resolveDebugConfiguration(
+    folder: vscode.WorkspaceFolder | undefined,
+    config: vscode.DebugConfiguration,
+    token?: vscode.CancellationToken | undefined,
+  ): Promise<vscode.DebugConfiguration | undefined> {
+    const launchContext = this.context.getWorkspaceState("build.lastLaunchedApp");
+
+    if (!launchContext) {
+      throw new Error("No Bazel app launched. Please build and run a Bazel target first.");
+    }
+
+    if (launchContext.type === "bazel-simulator") {
+      const debugPort = config.debugPort || 6667;
+
+      return {
+        type: "lldb-dap",
+        request: "attach",
+        name: config.name || "SweetPad: Bazel Debug",
+        debuggerRoot: folder?.uri.fsPath || "${workspaceFolder}",
+        attachCommands: [`process connect connect://localhost:${debugPort}`],
+        internalConsoleOptions: "openOnSessionStart",
+        timeout: 1000,
+      };
+    }
+
+    if (launchContext.type === "bazel-device") {
+      const debugPort = config.debugPort || 6667;
+
+      return {
+        type: "lldb-dap",
+        request: "attach",
+        name: config.name || "SweetPad: Bazel Debug (Device)",
+        debuggerRoot: folder?.uri.fsPath || "${workspaceFolder}",
+        attachCommands: [`process connect connect://localhost:${debugPort}`],
+        internalConsoleOptions: "openOnSessionStart",
+        timeout: 1000,
+      };
+    }
+
+    throw new Error(`Unsupported launch context type for Bazel debugging: ${launchContext.type}`);
+  }
+}
+
 export function registerDebugConfigurationProvider(context: ExtensionContext) {
   const dynamicProvider = new DynamicDebugConfigurationProvider({ context });
   const initialProvider = new InitialDebugConfigurationProvider();
+  const bazelProvider = new BazelDebugConfigurationProvider({ context });
+
+  // Register standard Xcode debug provider
   const disposable1 = vscode.debug.registerDebugConfigurationProvider(
     "sweetpad-lldb",
     initialProvider,
@@ -312,10 +366,18 @@ export function registerDebugConfigurationProvider(context: ExtensionContext) {
     vscode.DebugConfigurationProviderTriggerKind.Dynamic,
   );
 
+  // Register Bazel-specific debug provider
+  const disposable3 = vscode.debug.registerDebugConfigurationProvider(
+    "sweetpad-bazel-lldb",
+    bazelProvider,
+    vscode.DebugConfigurationProviderTriggerKind.Dynamic,
+  );
+
   return {
     dispose() {
       disposable1.dispose();
       disposable2.dispose();
+      disposable3.dispose();
     },
   };
 }

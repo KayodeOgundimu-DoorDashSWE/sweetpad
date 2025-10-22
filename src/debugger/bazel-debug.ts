@@ -175,24 +175,20 @@ export async function debugBazelAppOnSimulator(
     terminal.write(`   Workspace folder: ${workspaceFolder?.name || "undefined"}\n`);
     terminal.write(`   Workspace path: ${workspaceFolder?.uri.fsPath || "undefined"}\n`);
 
-    // Use lldb-dap with direct attach commands (like the example config)
+    // Use sweetpad-bazel-lldb type to trigger BazelDebugConfigurationProvider
     const debugConfig: vscode.DebugConfiguration = {
-      type: "lldb-dap",
+      type: "sweetpad-bazel-lldb",
       request: "attach",
       name: "SweetPad: Bazel Debug",
-      debuggerRoot: workspaceFolder?.uri.fsPath || "${workspaceFolder}",
-      attachCommands: [`process connect connect://localhost:${debugPort}`],
-      internalConsoleOptions: "openOnSessionStart",
-      timeout: 1000,
+      debugPort: debugPort, // Pass the port to the provider
     };
 
     terminal.write(`   Debug config:\n`);
     terminal.write(`     - type: ${debugConfig.type}\n`);
     terminal.write(`     - request: ${debugConfig.request}\n`);
-    terminal.write(`     - attachCommands: ${JSON.stringify(debugConfig.attachCommands)}\n`);
-    terminal.write(`     - debuggerRoot: ${debugConfig.debuggerRoot}\n`);
+    terminal.write(`     - debugPort: ${debugConfig.debugPort}\n`);
 
-    commonLogger.log("Starting debug session with lldb-dap", {
+    commonLogger.log("Starting Bazel debug session", {
       workspaceFolder: workspaceFolder?.name,
       debugConfig,
       launchContext: stored,
@@ -358,22 +354,20 @@ export async function debugBazelAppOnDevice(
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     terminal.write(`   Workspace folder: ${workspaceFolder?.name || "undefined"}\n`);
 
-    // Use lldb-dap with direct attach commands
+    // Use sweetpad-bazel-lldb type to trigger BazelDebugConfigurationProvider
     const debugConfig: vscode.DebugConfiguration = {
-      type: "lldb-dap",
+      type: "sweetpad-bazel-lldb",
       request: "attach",
       name: "SweetPad: Bazel Debug (Device)",
-      debuggerRoot: workspaceFolder?.uri.fsPath || "${workspaceFolder}",
-      attachCommands: [`process connect connect://localhost:${debugPort}`],
-      internalConsoleOptions: "openOnSessionStart",
-      timeout: 1000,
+      debugPort: debugPort, // Pass the port to the provider
     };
 
     terminal.write(`   Debug config:\n`);
     terminal.write(`     - type: ${debugConfig.type}\n`);
-    terminal.write(`     - attachCommands: ${JSON.stringify(debugConfig.attachCommands)}\n`);
+    terminal.write(`     - request: ${debugConfig.request}\n`);
+    terminal.write(`     - debugPort: ${debugConfig.debugPort}\n`);
 
-    commonLogger.log("Starting debug session with lldb-dap (device)", {
+    commonLogger.log("Starting Bazel debug session (device)", {
       workspaceFolder: workspaceFolder?.name,
       debugConfig,
     });
