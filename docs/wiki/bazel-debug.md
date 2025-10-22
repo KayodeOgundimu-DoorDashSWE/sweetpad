@@ -24,8 +24,9 @@ The Bazel debugging system provides a complete workflow for debugging iOS apps b
 │ 2. Enhanced Bazel Debug Workflow (bazel-debug.ts)              │
 │    Step 1: Build with debug symbols                            │
 │    Step 2: Extract app bundle and bundle identifier            │
-│    Step 3: Launch app with --wait-for-debugger                 │
-│    Step 4: Start debugserver attached to app                   │
+│    Step 3: Launch app with --wait-for-debugger (non-blocking)  │
+│    Step 4: Start debugserver attached to app (non-blocking)    │
+│    Step 5: Automatically start VSCode debugger                 │
 └──────────────────────┬──────────────────────────────────────────┘
                        │
                        ▼
@@ -45,10 +46,11 @@ The Bazel debugging system provides a complete workflow for debugging iOS apps b
                        │
                        ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ 5. User starts VSCode debugging                                │
-│    → Debug Configuration Provider resolves config              │
+│ 5. VSCode debugging starts automatically!                      │
+│    → vscode.debug.startDebugging() called                      │
+│    → BazelDebugConfigurationProvider resolves config           │
 │    → LLDB connects via gdb-remote to localhost:6667            │
-│    → Debug session begins!                                      │
+│    → Debug session begins - no manual F5 needed!               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -129,57 +131,92 @@ Provides low-level functions for launching apps:
 
 ### 3. `provider.ts` - Debug Configuration Resolution
 
-Updates to the debug configuration provider:
+**Two separate providers for different workflows:**
+
+#### BazelDebugConfigurationProvider (type: `sweetpad-bazel-lldb`)
+
+Handles **automatic Bazel debugging** workflow:
 
 ```typescript
-// Enhanced methods:
--resolveBazelSimulatorDebugConfiguration() - // Connect to debugserver for simulator
-  resolveBazelDeviceDebugConfiguration(); // Connect to debugserver for device
-```
-
-**LLDB Configuration:**
-
-For **simulators**, LLDB connects directly:
-
-```json
-{
-  "type": "lldb",
-  "request": "custom",
-  "program": "/path/to/app.app",
-  "initCommands": ["gdb-remote localhost:6667"]
+// For simulators and devices, connects to custom debugserver on port 6667
+class BazelDebugConfigurationProvider {
+  resolveDebugConfiguration(config) {
+    return {
+      type: "lldb-dap",
+      request: "attach",
+      attachCommands: [`process connect connect://localhost:${debugPort}`],
+      internalConsoleOptions: "openOnSessionStart",
+      timeout: 1000,
+    };
+  }
 }
 ```
 
-For **devices**, additional setup is required:
+#### DynamicDebugConfigurationProvider (type: `sweetpad-lldb`)
+
+Handles **manual F5 debugging** (standard Xcode workflow):
+
+```typescript
+// For Bazel apps launched manually, uses simple waitFor attachment
+resolveBazelSimulatorDebugConfiguration(config, launchContext) {
+  config.type = "lldb";
+  config.waitFor = true;
+  config.request = "attach";
+  config.program = launchContext.appPath;
+}
+```
+
+**LLDB Configuration (Automatic Bazel Debugging):**
+
+For **simulators**:
 
 ```json
 {
-  "type": "lldb",
-  "request": "custom",
-  "program": "/path/to/app.app",
-  "initCommands": [
-    "platform select remote-ios",
-    "process handle SIGSTOP -p true -s false -n false",
-    "gdb-remote localhost:6667"
-  ],
-  "preRunCommands": ["script lldb.target.module[0].SetPlatformFileSpec(...)"]
+  "type": "lldb-dap",
+  "request": "attach",
+  "attachCommands": ["process connect connect://localhost:6667"],
+  "internalConsoleOptions": "openOnSessionStart",
+  "timeout": 1000
+}
+```
+
+For **devices**, same configuration (debugserver handles platform specifics):
+
+```json
+{
+  "type": "lldb-dap",
+  "request": "attach",
+  "attachCommands": ["process connect connect://localhost:6667"],
+  "internalConsoleOptions": "openOnSessionStart",
+  "timeout": 1000
 }
 ```
 
 ## Usage
 
-### Basic Usage
+### Basic Usage (Automatic Debugging)
 
 1. **Select a Bazel target** in the SweetPad sidebar
-2. **Right-click** and select "Debug Bazel Target"
+2. **Right-click** and select "Debug Bazel Target" (or click the bug icon)
 3. **Choose destination** (simulator or device)
-4. **Wait for build and launch** - Terminal shows progress
-5. **App launches paused** - "⏸️ App is paused, waiting for debugger..."
-6. **Debugserver starts** - "🔌 Starting debugserver on port 6667..."
-7. **Start debugging** in VSCode:
-   - Open Run & Debug panel (Cmd+Shift+D)
-   - Select "SweetPad: Build and Run (Wait for debugger)"
-   - Click Start Debugging (F5)
+4. **Wait for automatic workflow:**
+   - ✅ Build completes with debug symbols
+   - 📦 App bundle located and validated
+   - 🚀 App launches with `--wait-for-debugger` (paused)
+   - 🔌 Debugserver starts on port 6667
+   - 🐛 **VSCode debugger starts automatically!**
+5. **Debug your app!** - Breakpoints, variables, console all work immediately
+
+**No need to press F5 or manually start debugging!** The workflow is fully automatic.
+
+### Manual Debugging (F5 Workflow)
+
+If you want to manually attach the debugger:
+
+1. **Launch a Bazel app** (use "Build & Run" instead of "Debug")
+2. **Open Run & Debug panel** (Cmd+Shift+D)
+3. **Select** "SweetPad: Build and Run (Wait for debugger)"
+4. **Press F5** to attach
 
 ### Advanced Configuration
 
@@ -214,16 +251,44 @@ In `.vscode/settings.json`:
 }
 ```
 
+## Debugging Workflows
+
+SweetPad supports **two debugging workflows** for maximum flexibility:
+
+### 1. Automatic Debugging (Recommended)
+
+**For Bazel targets:**
+
+- Click "Debug Bazel Target" → **Debugger starts automatically**
+- Uses custom debugserver on port 6667
+- Type: `sweetpad-bazel-lldb` → `BazelDebugConfigurationProvider`
+
+**For Xcode builds:**
+
+- Click "Debug Run" → **Debugger starts automatically**
+- Uses standard iOS simulator debugging
+- Type: `sweetpad-lldb` → `DynamicDebugConfigurationProvider`
+
+### 2. Manual Debugging (F5 Workflow)
+
+**For any launched app:**
+
+- Launch app with "Build & Run"
+- Press F5 to attach debugger manually
+- Type: `sweetpad-lldb` → `DynamicDebugConfigurationProvider`
+
 ## Differences from Xcode Debugging
 
-| Feature             | Bazel (SweetPad)                                 | Xcode Projects                       |
-| ------------------- | ------------------------------------------------ | ------------------------------------ |
-| Build system        | Bazel                                            | xcodebuild                           |
-| Debug symbols       | `--compilation_mode=dbg --copt=-g --strip=never` | `GCC_GENERATE_DEBUGGING_SYMBOLS=YES` |
-| Launch method       | `simctl launch --wait-for-debugger`              | Same                                 |
-| Debugserver setup   | Manual via script                                | Automatic in Xcode                   |
-| LLDB connection     | `gdb-remote localhost:6667`                      | `waitFor=true`                       |
-| App bundle location | `bazel-bin/<package>/<target>.app`               | DerivedData                          |
+| Feature              | Bazel (Automatic)                                | Xcode (Automatic)                    | Manual (F5)       |
+| -------------------- | ------------------------------------------------ | ------------------------------------ | ----------------- |
+| Build system         | Bazel                                            | xcodebuild                           | Any               |
+| Debug symbols        | `--compilation_mode=dbg --copt=-g --strip=never` | `GCC_GENERATE_DEBUGGING_SYMBOLS=YES` | Any               |
+| Launch method        | `simctl launch --wait-for-debugger` (background) | Same (background)                    | Any               |
+| Debugserver setup    | Custom on port 6667                              | Built-in (standard attachment)       | Built-in          |
+| LLDB connection      | `gdb-remote localhost:6667`                      | `waitFor=true` + process name        | `waitFor=true`    |
+| Automatic attachment | ✅ Yes                                           | ✅ Yes                               | ❌ No (manual F5) |
+| Provider type        | `sweetpad-bazel-lldb`                            | `sweetpad-lldb`                      | `sweetpad-lldb`   |
+| App bundle location  | `bazel-bin/<package>/<target>.app`               | DerivedData                          | Any               |
 
 ## Troubleshooting
 
@@ -314,12 +379,28 @@ You can use any available port by configuring `debugPort` in launch.json.
 
 ### Process Lifecycle
 
+**Automatic Bazel Debugging:**
+
 1. **Build completes** → app binary with symbols ready
-2. **App launches** → paused before `main()`, returns PID
-3. **Debugserver starts** → attached to PID, listening on port
-4. **LLDB connects** → sends `gdb-remote` command
-5. **Debugging begins** → breakpoints set, execution continues
-6. **Session ends** → debugserver exits, app process terminated
+2. **App launches** (background) → paused before `main()`, returns PID
+3. **Debugserver starts** (background) → attached to PID, listening on port 6667
+4. **Wait 1 second** → ensure debugserver is ready
+5. **Call `vscode.debug.startDebugging()`** → with type `sweetpad-bazel-lldb`
+6. **Provider resolves config** → returns `lldb-dap` config with `attachCommands`
+7. **LLDB connects** → `process connect connect://localhost:6667`
+8. **Debugging begins** → breakpoints set, execution continues automatically
+9. **Session ends** → debugserver exits, app process terminated
+
+**Automatic Xcode Debugging:**
+
+1. **Build completes** → app binary with symbols ready
+2. **App launches** (background) → paused before `main()` with `--wait-for-debugger`
+3. **Wait 1.5 seconds** → ensure app is ready
+4. **Call `vscode.debug.startDebugging()`** → with type `sweetpad-lldb`
+5. **Provider resolves config** → returns `lldb` config with `waitFor: true`
+6. **LLDB attaches** → finds process by name
+7. **Debugging begins** → breakpoints set, execution continues automatically
+8. **Session ends** → app process terminated
 
 ## Files Created/Modified
 

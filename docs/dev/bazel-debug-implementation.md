@@ -7,13 +7,14 @@ This document summarizes the implementation of the Bazel iOS app debugging workf
 Implemented a complete debugging workflow for Bazel-built iOS apps, similar to the standard iOS simulator debugging but
 adapted for Bazel's build system and output structure.
 
-## Implementation Date
+## Implementation Dates
 
-October 21, 2025
+- **Initial Implementation:** October 21, 2025
+- **Automatic Debugging:** October 22, 2025
 
 ## Files Created
 
-### 1. `src/debugger/bazel-launcher.ts` (330 lines)
+### 1. `src/debugger/bazel-launcher.ts` (356 lines)
 
 **Purpose:** Low-level utilities for launching and managing Bazel-built iOS apps
 
@@ -33,14 +34,14 @@ October 21, 2025
 - Robust error handling and logging
 - PID extraction from launch output
 
-### 2. `src/debugger/bazel-debug.ts` (250 lines)
+### 2. `src/debugger/bazel-debug.ts` (430+ lines)
 
-**Purpose:** Complete debug workflow orchestration for Bazel apps
+**Purpose:** Complete automatic debug workflow orchestration for Bazel apps
 
 **Key exports:**
 
-- `debugBazelAppOnSimulator()` - Full debug workflow for simulators
-- `debugBazelAppOnDevice()` - Full debug workflow for devices
+- `debugBazelAppOnSimulator()` - Full automatic debug workflow for simulators
+- `debugBazelAppOnDevice()` - Full automatic debug workflow for devices
 - `enhancedBazelDebugCommand()` - Main entry point for debug command
 
 **Workflow steps:**
@@ -60,16 +61,23 @@ October 21, 2025
    - Extract bundle identifier
    - Verify bundle integrity
 
-3. **Launch with debugger support:**
+3. **Launch with debugger support (non-blocking):**
 
    - Install on simulator/device
-   - Launch with `--wait-for-debugger` flag
+   - Launch with `--wait-for-debugger` flag (background process)
    - Capture PID
 
-4. **Start debugserver:**
+4. **Start debugserver (non-blocking):**
+
    - Kill existing debugserver on port
-   - Start new debugserver attached to PID
+   - Start new debugserver attached to PID (background process)
    - Listen on localhost:6667 (configurable)
+
+5. **Automatically start VSCode debugger:**
+   - Wait 1 second for debugserver initialization
+   - Call `vscode.debug.startDebugging()` with type `sweetpad-bazel-lldb`
+   - Provider resolves configuration and connects to debugserver
+   - Debugging begins automatically!
 
 ### 3. `docs/wiki/bazel-debug.md` (500+ lines)
 
@@ -120,31 +128,55 @@ export async function bazelDebugCommand(...) {
 
 **Changes:**
 
-- Enhanced `resolveBazelSimulatorDebugConfiguration()` to use `gdb-remote` connection
-- Enhanced `resolveBazelDeviceDebugConfiguration()` for device debugging
-- Changed from `waitFor: true` to `request: "custom"` with explicit debugserver connection
+- **Created `BazelDebugConfigurationProvider`** - New dedicated provider for automatic Bazel debugging
+- **Updated `DynamicDebugConfigurationProvider`** - Simplified Bazel methods for manual F5 debugging
+- **Two separate workflows** - Automatic (sweetpad-bazel-lldb) vs Manual (sweetpad-lldb)
 
 **Key improvements:**
 
-**Simulator configuration:**
+**BazelDebugConfigurationProvider (type: `sweetpad-bazel-lldb`):**
+
+For automatic debugging workflow:
 
 ```typescript
-config.type = "lldb";
-config.request = "custom"; // Changed from "attach"
-config.initCommands = [`gdb-remote localhost:${debugPort}`];
+class BazelDebugConfigurationProvider {
+  resolveDebugConfiguration(folder, config) {
+    const launchContext = this.context.getWorkspaceState("build.lastLaunchedApp");
+    const debugPort = config.debugPort || 6667;
+
+    return {
+      type: "lldb-dap",
+      request: "attach",
+      debuggerRoot: folder?.uri.fsPath,
+      attachCommands: [`process connect connect://localhost:${debugPort}`],
+      internalConsoleOptions: "openOnSessionStart",
+      timeout: 1000,
+    };
+  }
+}
 ```
 
-**Device configuration:**
+**DynamicDebugConfigurationProvider (type: `sweetpad-lldb`):**
+
+For manual F5 debugging:
 
 ```typescript
-config.type = "lldb";
-config.request = "custom";
-config.initCommands = [
-  "platform select remote-ios",
-  "process handle SIGSTOP -p true -s false -n false",
-  `gdb-remote localhost:${debugPort}`,
-];
-config.preRunCommands = [`script lldb.target.module[0].SetPlatformFileSpec(...)`];
+// Simulator - simple waitFor attachment
+resolveBazelSimulatorDebugConfiguration(config, launchContext) {
+  config.type = "lldb";
+  config.waitFor = true;
+  config.request = "attach";
+  config.program = launchContext.appPath;
+}
+
+// Device - full device attachment with process wait
+resolveBazelDeviceDebugConfiguration(config, launchContext) {
+  // Wait for process, get PID, set up platform commands
+  config.type = "lldb";
+  config.request = "attach";
+  config.initCommands = ["platform select remote-ios", ...];
+  config.processCreateCommands = [`device process attach --pid ${pid}`, ...];
+}
 ```
 
 ### 3. `tsconfig.json`
@@ -516,6 +548,31 @@ No migration needed - the feature is backward compatible.
 
 ## Changelog
 
+### v1.1.0 - 2025-10-22
+
+**Added:**
+
+- ✨ **Automatic debugger attachment** for both Bazel and Xcode builds
+- `BazelDebugConfigurationProvider` - Dedicated provider for Bazel debugging
+- "Debug Run" command for Xcode builds
+- Non-blocking app launch for debug workflows
+- Detailed logging of debug session startup
+
+**Changed:**
+
+- Bazel debugging now uses `sweetpad-bazel-lldb` type (automatic workflow)
+- Xcode debugging now uses `sweetpad-lldb` type (automatic workflow)
+- App launch with `--wait-for-debugger` runs in background
+- Debugserver starts in background for Bazel
+- Wait times adjusted for reliability (1s Bazel, 1.5s Xcode)
+
+**Improved:**
+
+- No more manual F5 required - debugging starts automatically!
+- Clearer separation between automatic and manual workflows
+- Better error handling and user feedback
+- More detailed terminal logging
+
 ### v1.0.0 - 2025-10-21
 
 **Added:**
@@ -539,4 +596,4 @@ No migration needed - the feature is backward compatible.
 
 ---
 
-**Status:** ✅ Implementation Complete, Ready for Review and Testing
+**Status:** ✅ Implementation Complete with Automatic Debugging, Ready for Review and Testing
