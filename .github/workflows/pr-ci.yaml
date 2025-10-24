@@ -187,3 +187,18 @@ jobs:
           name: ${{ steps.info.outputs.vsix_name }}
           path: ${{ steps.info.outputs.vsix_name }}
           retention-days: 30
+          
+      - name: Create Release with VSIX
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.info.outputs.tag_name }}
+          name: ${{ steps.info.outputs.tag_name }}
+          body: |
+            PR #${{ steps.info.outputs.pr_number }} build - ${{ github.event.pull_request.title }}
+            
+            Install the VSIX file: `${{ steps.info.outputs.vsix_name }}`
+          files: ${{ steps.info.outputs.vsix_name }}
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
