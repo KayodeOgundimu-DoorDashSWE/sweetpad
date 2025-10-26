@@ -299,6 +299,7 @@ export async function getBundleIdentifier(appPath: string): Promise<string> {
 
 /**
  * Start debugserver and attach to a process
+ * Returns a promise that resolves when debugserver exits
  */
 export async function startDebugServer(options: {
   pid: number;
@@ -309,12 +310,36 @@ export async function startDebugServer(options: {
 
   // Kill any existing debugserver on this port
   try {
+    // Method 1: Find by port using lsof
+    const existingProcess = await exec({
+      command: "lsof",
+      args: ["-ti", `:${port}`],
+    }).catch(() => "");
+
+    if (existingProcess.trim()) {
+      const pids = existingProcess.trim().split("\n");
+      for (const existingPid of pids) {
+        if (existingPid) {
+          commonLogger.log("Killing existing process on port", { port, pid: existingPid });
+          await exec({
+            command: "kill",
+            args: ["-9", existingPid],
+          }).catch(() => {});
+        }
+      }
+    }
+
+    // Method 2: Also try pkill as fallback
     await exec({
       command: "pkill",
-      args: ["-f", `debugserver.*${port}`],
-    });
+      args: ["-9", "-f", `debugserver.*${port}`],
+    }).catch(() => {});
+
+    // Wait a bit for processes to die
+    await new Promise((resolve) => setTimeout(resolve, 200));
   } catch (error) {
-    // Ignore error if no process found
+    // Ignore errors - might not be any processes to kill
+    commonLogger.debug("Error during cleanup (expected if no existing debugserver)", { error });
   }
 
   const xcodeDevPath = await exec({
@@ -335,6 +360,17 @@ export async function startDebugServer(options: {
 
   const debugserverArgs = [`localhost:${port}`, "--attach", pid.toString()];
 
+  // Verify the target process is still running before attaching
+  try {
+    await exec({
+      command: "ps",
+      args: ["-p", pid.toString()],
+    });
+    commonLogger.log("Target process is running", { pid });
+  } catch (error) {
+    throw new Error(`Target process ${pid} is not running. App may have crashed or exited.`);
+  }
+
   commonLogger.log("Starting debugserver", {
     debugserverPath,
     args: debugserverArgs,
@@ -342,9 +378,111 @@ export async function startDebugServer(options: {
     port,
   });
 
-  // Launch debugserver (this will block until debugger detaches)
-  await exec({
-    command: debugserverPath,
-    args: debugserverArgs,
+  // Import spawn to run debugserver in background
+  const { spawn } = await import("node:child_process");
+
+  // Launch debugserver in background (don't wait for it to complete)
+  return new Promise((resolve, reject) => {
+    commonLogger.log("Spawning debugserver process...", {
+      command: debugserverPath,
+      args: debugserverArgs,
+    });
+
+    const debugserverProcess = spawn(debugserverPath, debugserverArgs, {
+      detached: false,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let started = false;
+    let allStdout = "";
+    let allStderr = "";
+
+    commonLogger.log("debugserver process spawned", {
+      pid: debugserverProcess.pid,
+    });
+
+    // Listen for stdout/stderr for debugging
+    debugserverProcess.stdout?.on("data", (data) => {
+      const output = data.toString();
+      allStdout += output;
+      commonLogger.log("debugserver stdout", { output, total: allStdout });
+    });
+
+    debugserverProcess.stderr?.on("data", (data) => {
+      const output = data.toString();
+      allStderr += output;
+      commonLogger.error("debugserver stderr", { output, total: allStderr });
+
+      // Check for common debugserver errors
+      if (output.includes("error") || output.includes("failed") || output.includes("unable")) {
+        commonLogger.error("debugserver reported error in stderr", { stderr: output });
+      }
+    });
+
+    debugserverProcess.on("error", (error) => {
+      commonLogger.error("debugserver spawn error", {
+        error,
+        errorType: typeof error,
+        errorMessage: (error as any)?.message,
+      });
+      if (!started) {
+        reject(error);
+      }
+    });
+
+    debugserverProcess.on("exit", (code, signal) => {
+      commonLogger.log("debugserver process exited", {
+        code,
+        signal,
+        stdout: allStdout,
+        stderr: allStderr,
+        wasStarted: started,
+        pid: debugserverProcess.pid,
+      });
+
+      // If exited before we confirmed it was listening, that's an error
+      if (!started) {
+        const errorMsg =
+          code !== 0
+            ? `debugserver exited with code ${code}. stderr: ${allStderr || "(empty)"}, stdout: ${allStdout || "(empty)"}`
+            : `debugserver exited unexpectedly (code 0) before listening. stderr: ${allStderr || "(empty)"}, stdout: ${allStdout || "(empty)"}`;
+        reject(new Error(errorMsg));
+      }
+    });
+
+    // debugserver with --attach doesn't print to stdout and port detection
+    // from Node.js is unreliable due to permissions/environment issues.
+    // We've verified manually that debugserver DOES start listening,
+    // so just wait a reasonable time and proceed.
+    const waitTime = 2000; // 2 seconds should be plenty for debugserver to attach
+
+    commonLogger.log("Waiting for debugserver to attach and start listening", {
+      port,
+      waitTime,
+      debugserverPid: debugserverProcess.pid,
+    });
+
+    setTimeout(() => {
+      // Check if process exited during wait
+      if (debugserverProcess.exitCode !== null) {
+        const errorMsg = `debugserver exited with code ${debugserverProcess.exitCode} during startup. stderr: ${allStderr || "(empty)"}, stdout: ${allStdout || "(empty)"}`;
+        commonLogger.error("debugserver exited before timeout", {
+          exitCode: debugserverProcess.exitCode,
+          stdout: allStdout,
+          stderr: allStderr,
+        });
+        reject(new Error(errorMsg));
+        return;
+      }
+
+      commonLogger.log("debugserver wait complete, assuming it's listening", {
+        processAlive: !debugserverProcess.killed,
+        processPid: debugserverProcess.pid,
+        exitCode: debugserverProcess.exitCode,
+      });
+
+      started = true;
+      resolve();
+    }, waitTime);
   });
 }

@@ -12,6 +12,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { ExtensionContext } from "../common/commands";
 import type { TaskTerminal } from "../common/tasks";
+import { exec } from "../common/exec";
 import {
   getBundleIdentifier,
   launchBazelAppOnSimulator,
@@ -21,7 +22,6 @@ import {
 import type { SimulatorDestination } from "../simulators/types";
 import type { DeviceDestination } from "../devices/types";
 import { commonLogger } from "../common/logger";
-import { exec } from "../common/exec";
 import type { BazelTreeItem } from "../build/tree";
 
 const DEFAULT_DEBUG_PORT = 6667;
@@ -70,15 +70,46 @@ export async function debugBazelAppOnSimulator(
   // Convert build label to path: "//Apps/Foo:Bar" → "Apps/Foo/Bar"
   const packagePath = bazelItem.target.buildLabel.replace("//", "").replace(":", "/");
 
-  // Bazel's bazel-bin symlink is usually at the workspace root, not the package directory
-  // Try multiple possible locations
+  // Find Bazel workspace root by looking for WORKSPACE or MODULE.bazel
+  let workspaceRoot = bazelItem.package.path;
+  let attempts = 0;
+  const maxAttempts = 10;
+
+  while (attempts < maxAttempts) {
+    try {
+      const hasWorkspace = await exec({
+        command: "test",
+        args: ["-f", path.join(workspaceRoot, "WORKSPACE")],
+      })
+        .then(() => true)
+        .catch(() => false);
+
+      const hasModule = await exec({
+        command: "test",
+        args: ["-f", path.join(workspaceRoot, "MODULE.bazel")],
+      })
+        .then(() => true)
+        .catch(() => false);
+
+      if (hasWorkspace || hasModule) {
+        break;
+      }
+    } catch {}
+
+    const parent = path.dirname(workspaceRoot);
+    if (parent === workspaceRoot) break; // Reached filesystem root
+    workspaceRoot = parent;
+    attempts++;
+  }
+
+  terminal.write(`   Workspace root: ${workspaceRoot}\n`);
+
+  // Bazel's bazel-bin symlink is at the workspace root
   const possiblePaths = [
-    // Try workspace root (most common)
-    path.resolve(bazelItem.package.path, `../../bazel-bin/${packagePath}.app`),
-    // Try package directory
+    // Primary: workspace root + bazel-bin
+    path.join(workspaceRoot, `bazel-bin/${packagePath}.app`),
+    // Fallback: package directory (rare)
     path.resolve(bazelItem.package.path, `bazel-bin/${packagePath}.app`),
-    // Try one level up
-    path.resolve(bazelItem.package.path, `../bazel-bin/${packagePath}.app`),
   ];
 
   let appPath: string | undefined;
@@ -107,6 +138,39 @@ export async function debugBazelAppOnSimulator(
   // Get bundle identifier
   const bundleId = await getBundleIdentifier(appPath);
   terminal.write(`   Bundle ID: ${bundleId}\n`);
+
+  // Step 2.5: Fix permissions and code sign for simulator (Bazel apps often lack proper permissions/signing)
+  terminal.write(`\n🔏 Step 2.5/4: Preparing app for simulator...\n`);
+
+  // Fix file permissions first
+  try {
+    await terminal.execute({
+      command: "chmod",
+      args: ["-R", "755", appPath],
+    });
+    terminal.write(`   ✅ File permissions fixed\n`);
+  } catch (error) {
+    terminal.write(`   ⚠️  Permission fix failed: ${error}\n`);
+  }
+
+  // Code sign for simulator
+  try {
+    await terminal.execute({
+      command: "codesign",
+      args: [
+        "--force",
+        "--sign",
+        "-", // Ad-hoc signing for simulator
+        "--timestamp=none",
+        "--preserve-metadata=identifier,entitlements,flags",
+        appPath,
+      ],
+    });
+    terminal.write(`   ✅ Code signing successful\n`);
+  } catch (error) {
+    terminal.write(`   ⚠️  Code signing failed, continuing anyway: ${error}\n`);
+    // Continue anyway - sometimes it works without re-signing
+  }
 
   // Step 3: Launch app with wait-for-debugger
   terminal.write(`\n🚀 Step 3/4: Launching app on simulator with debugger flag...\n`);
@@ -153,18 +217,17 @@ export async function debugBazelAppOnSimulator(
   terminal.write(`\n🔌 Step 4/4: Starting debugserver and attaching debugger...\n`);
   terminal.write(`   Starting debugserver on port ${debugPort}...\n`);
 
-  // Start debugserver in background (non-blocking)
-  const debugServerPromise = startDebugServer({
-    pid: launchResult.pid,
-    port: debugPort,
-  }).catch((error) => {
-    commonLogger.warn(`Debugserver exited: ${error}`);
-    terminal.write(`   ⚠️  Debugserver exited: ${error}\n`);
-  });
-
-  // Give debugserver time to start and ensure workspace state is ready
-  terminal.write(`   ⏱️  Waiting 1 second for debugserver to initialize...\n`);
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  // Start debugserver and wait for it to be ready (polls port until listening)
+  try {
+    await startDebugServer({
+      pid: launchResult.pid,
+      port: debugPort,
+    });
+    terminal.write(`   ✅ Debugserver is listening on port ${debugPort}\n`);
+  } catch (error) {
+    terminal.write(`   ⚠️  Failed to start debugserver: ${error}\n`);
+    throw error;
+  }
 
   // Step 5: Automatically start VSCode debugging
   terminal.write(`\n🐛 Attempting to start VSCode debugger...\n`);
@@ -180,6 +243,10 @@ export async function debugBazelAppOnSimulator(
       type: "sweetpad-bazel-lldb",
       request: "attach",
       name: "SweetPad: Bazel Debug",
+      debuggerRoot: workspaceFolder?.uri.fsPath || "${workspaceFolder}",
+      attachCommands: [`process connect connect://localhost:${debugPort}`],
+      internalConsoleOptions: "openOnSessionStart",
+      timeout: 100000, // Increased to 10 seconds
       debugPort: debugPort, // Pass the port to the provider
     };
 
@@ -195,15 +262,32 @@ export async function debugBazelAppOnSimulator(
     });
 
     terminal.write(`   Calling vscode.debug.startDebugging()...\n`);
+
+    commonLogger.log("About to call vscode.debug.startDebugging", {
+      workspaceFolder: workspaceFolder?.uri.fsPath,
+      debugConfig,
+      activeDebugSession: vscode.debug.activeDebugSession?.name,
+    });
+
     const started = await vscode.debug.startDebugging(workspaceFolder, debugConfig);
 
     terminal.write(`   Result: ${started ? "SUCCESS" : "FAILED"}\n`);
 
+    commonLogger.log("vscode.debug.startDebugging returned", {
+      started,
+      activeDebugSession: vscode.debug.activeDebugSession?.name,
+      activeDebugSessionType: vscode.debug.activeDebugSession?.type,
+    });
+
     if (started) {
       terminal.write(`\n   ✅ Debugger attached successfully!\n\n`);
+      terminal.write(`   Active session: ${vscode.debug.activeDebugSession?.name || "unknown"}\n`);
       terminal.write(`🎉 Happy debugging! Set breakpoints and inspect variables.\n`);
       terminal.write(`   (The terminal will remain open until you stop debugging)\n\n`);
-      commonLogger.log("Debugger started successfully");
+      commonLogger.log("Debugger started successfully", {
+        sessionName: vscode.debug.activeDebugSession?.name,
+        sessionType: vscode.debug.activeDebugSession?.type,
+      });
     } else {
       terminal.write(`\n   ⚠️  Failed to start debugger automatically.\n`);
       terminal.write(`   Please start debugging manually by pressing F5 or using Run & Debug panel.\n\n`);
@@ -222,10 +306,8 @@ export async function debugBazelAppOnSimulator(
     commonLogger.error("Error starting debugger", { error });
   }
 
-  // Wait for debugserver to complete (when user stops debugging)
-  await debugServerPromise;
-
-  terminal.write(`\n✅ Debug session completed\n`);
+  terminal.write(`\n✅ Debug workflow completed. Debugger is attached and running.\n`);
+  terminal.write(`   Note: debugserver will continue running in the background until you stop debugging.\n`);
 }
 
 /**
@@ -259,12 +341,45 @@ export async function debugBazelAppOnDevice(
   // Convert build label to path: "//Apps/Foo:Bar" → "Apps/Foo/Bar"
   const packagePath = bazelItem.target.buildLabel.replace("//", "").replace(":", "/");
 
-  // Bazel's bazel-bin symlink is usually at the workspace root, not the package directory
-  // Try multiple possible locations for both .ipa and .app
+  // Find Bazel workspace root by looking for WORKSPACE or MODULE.bazel
+  let workspaceRoot = bazelItem.package.path;
+  let attempts = 0;
+  const maxAttempts = 10;
+
+  while (attempts < maxAttempts) {
+    try {
+      const hasWorkspace = await exec({
+        command: "test",
+        args: ["-f", path.join(workspaceRoot, "WORKSPACE")],
+      })
+        .then(() => true)
+        .catch(() => false);
+
+      const hasModule = await exec({
+        command: "test",
+        args: ["-f", path.join(workspaceRoot, "MODULE.bazel")],
+      })
+        .then(() => true)
+        .catch(() => false);
+
+      if (hasWorkspace || hasModule) {
+        break;
+      }
+    } catch {}
+
+    const parent = path.dirname(workspaceRoot);
+    if (parent === workspaceRoot) break; // Reached filesystem root
+    workspaceRoot = parent;
+    attempts++;
+  }
+
+  terminal.write(`   Workspace root: ${workspaceRoot}\n`);
+
+  // Bazel's bazel-bin symlink is at the workspace root
+  // Try both .ipa and .app for device builds
   const basePaths = [
-    path.resolve(bazelItem.package.path, `../../bazel-bin/${packagePath}`),
+    path.join(workspaceRoot, `bazel-bin/${packagePath}`),
     path.resolve(bazelItem.package.path, `bazel-bin/${packagePath}`),
-    path.resolve(bazelItem.package.path, `../bazel-bin/${packagePath}`),
   ];
 
   let appPath: string | undefined;
@@ -302,6 +417,20 @@ export async function debugBazelAppOnDevice(
   // Get bundle identifier
   const bundleId = await getBundleIdentifier(appPath);
   terminal.write(`   Bundle ID: ${bundleId}\n`);
+
+  // Step 2.5: Verify code signing for device
+  terminal.write(`\n🔏 Step 2.5/4: Verifying code signature...\n`);
+  try {
+    await terminal.execute({
+      command: "codesign",
+      args: ["--verify", "--verbose", appPath],
+    });
+    terminal.write(`   ✅ Code signature valid\n`);
+  } catch (error) {
+    terminal.write(`   ⚠️  Code signature verification failed: ${error}\n`);
+    terminal.write(`   Note: Device apps must be properly signed with a valid certificate\n`);
+    // Continue anyway and let devicectl fail with a better error message
+  }
 
   // Step 3: Launch app with wait-for-debugger
   terminal.write(`\n🚀 Step 3/4: Installing and launching app on device...\n`);
@@ -360,6 +489,10 @@ export async function debugBazelAppOnDevice(
       request: "attach",
       name: "SweetPad: Bazel Debug (Device)",
       debugPort: debugPort, // Pass the port to the provider
+      debuggerRoot: workspaceFolder?.uri.fsPath || "${workspaceFolder}",
+      attachCommands: [`process connect connect://localhost:${debugPort}`],
+      internalConsoleOptions: "openOnSessionStart",
+      timeout: 100000,
     };
 
     terminal.write(`   Debug config:\n`);

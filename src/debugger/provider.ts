@@ -311,41 +311,71 @@ class BazelDebugConfigurationProvider implements vscode.DebugConfigurationProvid
     config: vscode.DebugConfiguration,
     token?: vscode.CancellationToken | undefined,
   ): Promise<vscode.DebugConfiguration | undefined> {
+    commonLogger.log("BazelDebugConfigurationProvider.resolveDebugConfiguration called", {
+      folder: folder?.uri.fsPath,
+      config,
+      token: !!token,
+    });
+
     const launchContext = this.context.getWorkspaceState("build.lastLaunchedApp");
 
+    commonLogger.log("Launch context retrieved", {
+      launchContext,
+      hasContext: !!launchContext,
+    });
+
     if (!launchContext) {
+      commonLogger.error("No launch context found - cannot debug");
       throw new Error("No Bazel app launched. Please build and run a Bazel target first.");
     }
 
     if (launchContext.type === "bazel-simulator") {
       const debugPort = config.debugPort || 6667;
 
-      return {
+      const resolvedConfig = {
         type: "lldb-dap",
         request: "attach",
         name: config.name || "SweetPad: Bazel Debug",
         debuggerRoot: folder?.uri.fsPath || "${workspaceFolder}",
         attachCommands: [`process connect connect://localhost:${debugPort}`],
         internalConsoleOptions: "openOnSessionStart",
-        timeout: 1000,
+        timeout: 100000, // Increased to 10 seconds
       };
+
+      commonLogger.log("Resolved Bazel simulator debug config", {
+        resolvedConfig,
+        debugPort,
+      });
+
+      return resolvedConfig;
     }
 
     if (launchContext.type === "bazel-device") {
       const debugPort = config.debugPort || 6667;
 
-      return {
+      const resolvedConfig = {
         type: "lldb-dap",
         request: "attach",
         name: config.name || "SweetPad: Bazel Debug (Device)",
         debuggerRoot: folder?.uri.fsPath || "${workspaceFolder}",
         attachCommands: [`process connect connect://localhost:${debugPort}`],
         internalConsoleOptions: "openOnSessionStart",
-        timeout: 1000,
+        timeout: 10000, // Increased to 10 seconds
       };
+
+      commonLogger.log("Resolved Bazel device debug config", {
+        resolvedConfig,
+        debugPort,
+      });
+
+      return resolvedConfig;
     }
 
-    throw new Error(`Unsupported launch context type for Bazel debugging: ${launchContext.type}`);
+    commonLogger.error("Unsupported launch context type", {
+      type: (launchContext as any).type,
+    });
+
+    throw new Error(`Unsupported launch context type for Bazel debugging: ${(launchContext as any).type}`);
   }
 }
 
