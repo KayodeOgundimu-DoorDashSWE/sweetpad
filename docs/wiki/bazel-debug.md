@@ -94,12 +94,23 @@ This module implements the complete debug workflow:
      <bundle-id>
    ```
 
-4. **Start debugserver:**
+4. **Code sign for simulator** (Bazel apps often lack proper signing):
+
+   ```bash
+   codesign --force --sign - --timestamp=none \
+     --preserve-metadata=identifier,entitlements,flags \
+     DoorDash.app
+   ```
+
+5. **Start debugserver:**
+
    ```bash
    <xcode-path>/SharedFrameworks/LLDB.framework/.../debugserver \
      localhost:6667 \
      --attach <pid>
    ```
+
+   Waits 2 seconds for debugserver to attach and start listening.
 
 **Device Workflow:**
 
@@ -146,7 +157,7 @@ class BazelDebugConfigurationProvider {
       request: "attach",
       attachCommands: [`process connect connect://localhost:${debugPort}`],
       internalConsoleOptions: "openOnSessionStart",
-      timeout: 1000,
+      timeout: 10000, // 10 seconds to allow debugserver to fully initialize
     };
   }
 }
@@ -176,7 +187,7 @@ For **simulators**:
   "request": "attach",
   "attachCommands": ["process connect connect://localhost:6667"],
   "internalConsoleOptions": "openOnSessionStart",
-  "timeout": 1000
+  "timeout": 10000
 }
 ```
 
@@ -188,7 +199,7 @@ For **devices**, same configuration (debugserver handles platform specifics):
   "request": "attach",
   "attachCommands": ["process connect connect://localhost:6667"],
   "internalConsoleOptions": "openOnSessionStart",
-  "timeout": 1000
+  "timeout": 10000
 }
 ```
 
@@ -302,6 +313,18 @@ SweetPad supports **two debugging workflows** for maximum flexibility:
 2. Verify port is available: `lsof -i :6667`
 3. Try a different port in debug configuration
 4. Ensure Xcode command line tools are installed
+5. For simulators: Verify app is properly code-signed (automatic for Bazel apps)
+
+### Issue: "xcrun simctl install failed with exit code 13"
+
+**Cause:** App bundle is not properly signed for simulator use
+
+**Solutions:**
+
+1. This is automatically fixed by SweetPad (ad-hoc signing with `codesign --force --sign -`)
+2. If persists, manually sign: `codesign --force --sign - DoorDash.app`
+3. Check file permissions: `chmod -R 755 DoorDash.app`
+4. Verify app bundle structure is intact
 
 ### Issue: "Bundle identifier not found"
 
@@ -347,6 +370,21 @@ SweetPad supports **two debugging workflows** for maximum flexibility:
 3. Ensure source files haven't moved since build
 4. Try setting breakpoints after app launches
 
+### Issue: "Debugserver did not start listening on port 6667"
+
+**Cause:** Debugserver spawned but the 2-second wait wasn't enough (rare)
+
+**Solutions:**
+
+1. Check if debugserver is actually running: `ps aux | grep debugserver`
+2. Verify port is listening: `lsof -i :6667 -sTCP:LISTEN`
+3. If debugserver IS listening, manually start debugger with F5
+4. Kill stuck debugserver: `lsof -ti :6667 | xargs kill -9`
+5. Ensure no other process is using port 6667
+
+**Note:** The extension uses a 2-second wait because port detection from Node.js is unreliable due to
+permissions/environment issues. Manual verification confirms debugserver does start correctly.
+
 ## Technical Details
 
 ### Debug Symbols
@@ -377,19 +415,36 @@ Default port is `6667`, chosen for:
 
 You can use any available port by configuring `debugPort` in launch.json.
 
+### Debugserver Wait Time
+
+SweetPad waits 2 seconds after spawning debugserver before attempting to connect LLDB. This approach was chosen because:
+
+**Why not port detection?**
+
+- Commands like `lsof` and `nc` fail when called from VS Code extension context due to permissions/environment issues
+- Manual verification confirms debugserver IS listening, but automated detection from Node.js is unreliable
+
+**Why 2 seconds works:**
+
+- Debugserver typically starts listening within 500-1000ms
+- 2 seconds provides comfortable margin for slower systems
+- If debugserver fails, the 10-second LLDB timeout will catch it with a clear error message
+- This is simpler and more reliable than complex port polling mechanisms
+
 ### Process Lifecycle
 
 **Automatic Bazel Debugging:**
 
 1. **Build completes** → app binary with symbols ready
-2. **App launches** (background) → paused before `main()`, returns PID
-3. **Debugserver starts** (background) → attached to PID, listening on port 6667
-4. **Wait 1 second** → ensure debugserver is ready
-5. **Call `vscode.debug.startDebugging()`** → with type `sweetpad-bazel-lldb`
-6. **Provider resolves config** → returns `lldb-dap` config with `attachCommands`
-7. **LLDB connects** → `process connect connect://localhost:6667`
-8. **Debugging begins** → breakpoints set, execution continues automatically
-9. **Session ends** → debugserver exits, app process terminated
+2. **Code sign for simulator** → ad-hoc signature applied (Bazel apps need this)
+3. **App launches** (background) → paused before `main()`, returns PID
+4. **Debugserver starts** (background) → attached to PID, listening on port 6667
+5. **Wait 2 seconds** → ensure debugserver is attached and listening
+6. **Call `vscode.debug.startDebugging()`** → with type `sweetpad-bazel-lldb`
+7. **Provider resolves config** → returns `lldb-dap` config with `attachCommands` and 10s timeout
+8. **LLDB connects** → `process connect connect://localhost:6667`
+9. **Debugging begins** → breakpoints set, execution continues automatically
+10. **Session ends** → debugserver exits, app process terminated
 
 **Automatic Xcode Debugging:**
 
@@ -426,12 +481,12 @@ You can use any available port by configuring `debugPort` in launch.json.
 ## Future Improvements
 
 1. **Parallel debugging** - Debug multiple processes/targets simultaneously
-2. **Automatic retry** - Retry connection on debugserver startup failures
-3. **Port management** - Dynamic port allocation to avoid conflicts
-4. **Enhanced logging** - Better visibility into debug session state
-5. **watchOS/tvOS support** - Extend beyond iOS
-6. **Remote debugging** - Debug on devices over network
-7. **Attach to running** - Attach debugger to already-running apps
+2. **Dynamic port allocation** - Auto-select available port if default is busy
+3. **watchOS/tvOS support** - Extend beyond iOS
+4. **Remote debugging** - Debug on devices over network
+5. **Attach to running** - Attach debugger to already-running apps
+6. **Conditional breakpoints UI** - Better breakpoint management
+7. **Debug performance metrics** - Track debugger connection times and failures
 
 ## References
 

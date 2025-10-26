@@ -2,6 +2,29 @@
 
 New features, improvements and bug fixes for SweetPad are documented in this file.
 
+## [Unreleased]
+
+### Performance Improvements
+
+- 🚀 **Major fix:** Removed expensive logging in `getBuildSettingsList()` that was logging entire stdout for each empty line
+- ⚡ Added in-memory caching for build settings - subsequent calls are now instant
+- ⚡ Export `clearBuildSettingsCache()` for manual cache invalidation
+
+### Bazel Debugging Improvements
+
+- 🐛 Fixed workspace root detection - now properly walks directory tree to find WORKSPACE/MODULE.bazel
+- 🐛 Fixed debugserver startup - switched from unreliable port polling to 2-second wait time
+- 🔧 Added automatic code signing for Bazel-built simulator apps (exit code 13 fix)
+- 🔧 Improved debugserver process cleanup using `lsof -ti :6667` + `kill -9`
+- 📝 Enhanced error logging with full stdout/stderr diagnostics
+- ⏱️ Increased LLDB timeout from 1s to 10s for more reliable connections
+
+### Documentation
+
+- 📚 Updated Bazel debugging docs with current implementation details
+- 📚 Documented port detection challenges and solutions
+- 📚 Added troubleshooting section for common Bazel debug issues
+
 ## [0.1.67] - 2025-05-17
 
 - Add support for range formatting [#149](https://github.com/KayodeOgundimu-DoorDashSWE/sweetpad/pull/149)

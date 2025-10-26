@@ -11,10 +11,11 @@ adapted for Bazel's build system and output structure.
 
 - **Initial Implementation:** October 21, 2025
 - **Automatic Debugging:** October 22, 2025
+- **Performance & Reliability Fixes:** October 26, 2025
 
 ## Files Created
 
-### 1. `src/debugger/bazel-launcher.ts` (356 lines)
+### 1. `src/debugger/bazel-launcher.ts` (489 lines)
 
 **Purpose:** Low-level utilities for launching and managing Bazel-built iOS apps
 
@@ -23,7 +24,7 @@ adapted for Bazel's build system and output structure.
 - `launchBazelAppOnSimulator()` - Launch app on iOS Simulator with debug support
 - `launchBazelAppOnDevice()` - Launch app on physical iOS device
 - `getBundleIdentifier()` - Extract bundle ID from .app bundle
-- `startDebugServer()` - Start and manage debugserver process
+- `startDebugServer()` - Start and manage debugserver process (with 2-second wait)
 - `waitForSimulatorBoot()` - Ensure simulator is ready before app installation
 
 **Features:**
@@ -33,8 +34,10 @@ adapted for Bazel's build system and output structure.
 - Environment variable handling (`SIMCTL_CHILD_*`, `DEVICECTL_CHILD_*`)
 - Robust error handling and logging
 - PID extraction from launch output
+- Automatic cleanup of existing debugserver processes on port
+- Time-based wait (2s) instead of unreliable port detection from Node.js
 
-### 2. `src/debugger/bazel-debug.ts` (430+ lines)
+### 2. `src/debugger/bazel-debug.ts` (565 lines)
 
 **Purpose:** Complete automatic debug workflow orchestration for Bazel apps
 
@@ -52,31 +55,43 @@ adapted for Bazel's build system and output structure.
    bazel build <target> \
      --compilation_mode=dbg \
      --copt=-g \
-     --strip=never
+     --strip=never \
+     --platforms=@build_bazel_apple_support//platforms:ios_sim_arm64  # for simulator
    ```
 
 2. **Locate and validate app bundle:**
 
-   - Find `.app` in `bazel-bin/`
-   - Extract bundle identifier
+   - Find `.app` in `bazel-bin/` (searches workspace root by looking for WORKSPACE/MODULE.bazel)
+   - Extract bundle identifier from Info.plist
    - Verify bundle integrity
 
-3. **Launch with debugger support (non-blocking):**
+3. **Code sign for simulator (Bazel apps only):**
+
+   ```bash
+   chmod -R 755 DoorDash.app  # Fix file permissions
+   codesign --force --sign - --timestamp=none \
+     --preserve-metadata=identifier,entitlements,flags \
+     DoorDash.app  # Ad-hoc signing
+   ```
+
+4. **Launch with debugger support (non-blocking):**
 
    - Install on simulator/device
    - Launch with `--wait-for-debugger` flag (background process)
    - Capture PID
+   - Verify process is still running
 
-4. **Start debugserver (non-blocking):**
+5. **Start debugserver (non-blocking):**
 
-   - Kill existing debugserver on port
+   - Kill existing debugserver on port using `lsof -ti :6667` + `kill -9`
    - Start new debugserver attached to PID (background process)
    - Listen on localhost:6667 (configurable)
+   - **Wait 2 seconds** for debugserver to attach and start listening
 
-5. **Automatically start VSCode debugger:**
-   - Wait 1 second for debugserver initialization
+6. **Automatically start VSCode debugger:**
    - Call `vscode.debug.startDebugging()` with type `sweetpad-bazel-lldb`
-   - Provider resolves configuration and connects to debugserver
+   - Provider resolves configuration with 10-second timeout
+   - LLDB connects to debugserver via `process connect connect://localhost:6667`
    - Debugging begins automatically!
 
 ### 3. `docs/wiki/bazel-debug.md` (500+ lines)
@@ -502,22 +517,43 @@ No migration needed - the feature is backward compatible.
    - Use consistent port management
    - Provide clear user feedback
 
-3. **Error Messages Matter:**
+3. **Port Detection from Node.js is Unreliable:**
+
+   - Commands like `lsof` and `nc` fail from VS Code extension context
+   - Works perfectly when run manually, but fail from child_process.spawn()
+   - Environment/permissions issues prevent accurate port detection
+   - **Solution:** Use fixed 2-second wait time instead of polling
+   - Manual verification confirmed debugserver DOES listen correctly
+
+4. **Bazel Apps Need Code Signing for Simulators:**
+
+   - Bazel-built apps lack proper simulator code signing
+   - Results in exit code 13 from `xcrun simctl install`
+   - **Solution:** Apply ad-hoc signature with `codesign --force --sign -`
+   - Also need to fix permissions with `chmod -R 755`
+
+5. **Error Messages Matter:**
 
    - Users need actionable error messages
    - Include context in error logs
    - Provide troubleshooting hints
 
-4. **Separation is Key:**
+6. **Separation is Key:**
 
    - Small, focused modules are easier to test
    - Clear responsibility boundaries
    - Easier to extend and maintain
 
-5. **TypeScript Configuration:**
+7. **TypeScript Configuration:**
+
    - Keep module resolution, target, and lib aligned
    - ES2020 is minimum for modern Node.js
    - Use strict mode for better type safety
+
+8. **Build Settings Cache Critical for Performance:**
+   - `xcodebuild -showBuildSettings` takes 2-10 seconds
+   - Logging entire stdout on every empty line caused massive slowdowns
+   - In-memory caching reduces repeated calls to instant responses
 
 ## References
 
@@ -548,6 +584,36 @@ No migration needed - the feature is backward compatible.
 
 ## Changelog
 
+### v1.2.0 - 2025-10-26
+
+**Fixed:**
+
+- 🐛 **Major performance fix:** Removed expensive logging in `getBuildSettingsList()` that logged entire stdout for each
+  empty line
+- 🐛 **Port detection issue:** Switched from unreliable port polling to 2-second wait time
+- 🐛 **Code signing for Bazel apps:** Added automatic ad-hoc signing + permissions fix for simulator apps
+- 🐛 **Workspace root detection:** Proper Bazel workspace root finder (walks up to find WORKSPACE/MODULE.bazel)
+- 🐛 **Debugserver cleanup:** Improved process cleanup using `lsof -ti` + `kill -9`
+
+**Added:**
+
+- ✨ In-memory build settings cache for instant repeated calls
+- ✨ Process verification before debugserver attach
+- ✨ Enhanced error logging with full diagnostics
+- ✨ `clearBuildSettingsCache()` export for manual cache clearing
+
+**Changed:**
+
+- Debugserver wait time: 1s → 2s for better reliability
+- LLDB timeout: 1s → 10s to accommodate slower debugserver startup
+- Port detection: Removed unreliable `lsof`/`nc` polling, use time-based wait
+
+**Improved:**
+
+- Debugserver spawns correctly in background with full output capture
+- Better error messages with stdout/stderr details
+- Workspace root finding is now robust across different Bazel layouts
+
 ### v1.1.0 - 2025-10-22
 
 **Added:**
@@ -564,7 +630,7 @@ No migration needed - the feature is backward compatible.
 - Xcode debugging now uses `sweetpad-lldb` type (automatic workflow)
 - App launch with `--wait-for-debugger` runs in background
 - Debugserver starts in background for Bazel
-- Wait times adjusted for reliability (1s Bazel, 1.5s Xcode)
+- Wait times adjusted for reliability
 
 **Improved:**
 
